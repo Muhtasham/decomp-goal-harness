@@ -11,7 +11,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parent
 BUILD = ROOT / "build"
 ORIGINAL = ROOT / "original.c"
@@ -73,9 +72,7 @@ def score(candidate: Path) -> dict[str, object]:
     exact = sum(
         1
         for i in range(total)
-        if i < len(original_bytes)
-        and i < len(candidate_bytes)
-        and original_bytes[i] == candidate_bytes[i]
+        if i < len(original_bytes) and i < len(candidate_bytes) and original_bytes[i] == candidate_bytes[i]
     )
     matched = filecmp.cmp(original_obj, candidate_obj, shallow=False)
     fuzzy = exact / total if total else 1.0

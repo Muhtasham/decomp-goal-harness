@@ -27,6 +27,24 @@ Or run without installing:
 uv run decomp-goal --help
 ```
 
+## Development checks
+
+The repo uses Ruff for linting/formatting, ty for type checking, and pre-commit for local hooks.
+
+```bash
+uv sync --dev
+uv run ruff check .
+uv run ruff format --check .
+uv run ty check .
+uv run pre-commit run --all-files
+```
+
+Install the local git hook:
+
+```bash
+uv run pre-commit install
+```
+
 ## Commands
 
 Discover active projects from decomp.dev:

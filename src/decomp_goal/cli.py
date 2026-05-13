@@ -16,13 +16,8 @@ from pathlib import Path
 from typing import Any
 from urllib.request import Request, urlopen
 
-
-NON_MATCHING_RE = re.compile(
-    r"Object\(\s*(?P<status>NonMatching|Equivalent)\s*,\s*[\"'](?P<path>[^\"']+)[\"']"
-)
-ACTOR_REL_RE = re.compile(
-    r"ActorRel\(\s*(?P<status>NonMatching|Equivalent)\s*,\s*[\"'](?P<name>[^\"']+)[\"']"
-)
+NON_MATCHING_RE = re.compile(r"Object\(\s*(?P<status>NonMatching|Equivalent)\s*,\s*[\"'](?P<path>[^\"']+)[\"']")
+ACTOR_REL_RE = re.compile(r"ActorRel\(\s*(?P<status>NonMatching|Equivalent)\s*,\s*[\"'](?P<name>[^\"']+)[\"']")
 ARTICLE_RE = re.compile(r"<article class=\"project\"(?P<attrs>.*?)</article>", re.S)
 ATTR_RE = re.compile(r"(?P<name>[a-zA-Z0-9_-]+)=\"(?P<value>[^\"]*)\"")
 CLAIM_RE = re.compile(
@@ -165,9 +160,10 @@ def default_prompt_path(repo: Path) -> Path:
 
 def default_experiments_path(repo: Path, unit: str | None) -> Path:
     safe_unit = safe_slug(unit, "target")
-    return git_path(repo, f"decomp-goal/experiments/{safe_unit}.md") or (
-        repo / ".decomp-goal" / "experiments" / f"{safe_unit}.md"
-    ).resolve()
+    return (
+        git_path(repo, f"decomp-goal/experiments/{safe_unit}.md")
+        or (repo / ".decomp-goal" / "experiments" / f"{safe_unit}.md").resolve()
+    )
 
 
 def default_leads_dir(repo: Path) -> Path:
@@ -212,9 +208,7 @@ def inspect_dtk(repo: Path) -> dict[str, Any]:
     orig_root = repo / "orig" / default_version
     if orig_root.exists():
         original_entries = [
-            str(path.relative_to(orig_root))
-            for path in orig_root.rglob("*")
-            if path.name != ".gitkeep"
+            str(path.relative_to(orig_root)) for path in orig_root.rglob("*") if path.name != ".gitkeep"
         ][:20]
     return {
         "configure_py": (repo / "configure.py").exists(),
@@ -252,8 +246,15 @@ def fetch_decompdev_projects(query: str | None, platform: str | None, limit: int
         title_match = re.search(r"<h3 class=\"project-title\">(?P<title>.*?)</h3>", article, re.S)
         href_match = re.search(r"<a class=\"project-link\" href=\"(?P<href>[^\"]+)\"", article)
         summary_match = re.search(r"<h6>(?P<summary>.*?)</h6>", article, re.S)
-        commit_match = re.search(r'href="(?P<commit_url>https://github.com/[^"]+/commit/(?P<sha>[a-f0-9]+))"', article)
-        updated_match = re.search(r'<span title="(?P<updated>[^"]+)">Updated (?P<updated_relative>.*?)</span>', article, re.S)
+        commit_match = re.search(
+            r'href="(?P<commit_url>https://github.com/[^"]+/commit/(?P<sha>[a-f0-9]+))"',
+            article,
+        )
+        updated_match = re.search(
+            r'<span title="(?P<updated>[^"]+)">Updated (?P<updated_relative>.*?)</span>',
+            article,
+            re.S,
+        )
         if not title_match or not href_match:
             continue
 
@@ -354,7 +355,9 @@ def list_github_issues(
     return filtered
 
 
-def list_targets(repo: Path, limit: int | None = None, query: str | None = None, ranked: bool = False) -> list[dict[str, Any]]:
+def list_targets(
+    repo: Path, limit: int | None = None, query: str | None = None, ranked: bool = False
+) -> list[dict[str, Any]]:
     config = load_config(repo)
     adapter = detect_adapter(repo, config)
     if adapter == "dtk":
@@ -469,7 +472,7 @@ def write_steering_lead(repo: Path, unit: str | None, source: str, text: str) ->
 
 Created: {datetime.now(timezone.utc).isoformat()}
 Source: {source}
-Unit: {unit or '-'}
+Unit: {unit or "-"}
 
 {text.strip()}
 """
@@ -588,7 +591,17 @@ def build_decompiler_report(repo: Path, unit: str | None, function: str | None) 
         sources = sorted({str(item.get("source") or "unknown") for item in items})
         notes = " ".join(str(item.get("notes") or "") for item in items).lower()
         suspected = []
-        for token in ["type", "layout", "inline", "branch", "string", "register", "stack", "reloc", "temp"]:
+        for token in [
+            "type",
+            "layout",
+            "inline",
+            "branch",
+            "string",
+            "register",
+            "stack",
+            "reloc",
+            "temp",
+        ]:
             if token in notes:
                 suspected.append(token)
         functions.append(
@@ -686,7 +699,14 @@ def run_generic(repo: Path, config: dict[str, Any], unit: str | None) -> dict[st
         res = run_command(name, command, repo, unit)
         command_results.append(res)
         if res.exit_code != 0:
-            return finish_result(repo, "generic", unit, command_results, matched=False, blocker=f"{name}_failed")
+            return finish_result(
+                repo,
+                "generic",
+                unit,
+                command_results,
+                matched=False,
+                blocker=f"{name}_failed",
+            )
 
     score = parse_score(command_results[-1].stdout if command_results else "")
     matched = score.get("matched") is True
@@ -904,7 +924,9 @@ def print_history(records: list[dict[str, Any]]) -> None:
         fuzzy_text = f"{fuzzy:.2f}%" if fuzzy is not None else "-"
         head = (record.get("git") or {}).get("head") or "-"
         blocker = record.get("blocker") or "-"
-        print(f"{record.get('created_at')} {head} matched={record.get('matched')} code={code_text} fuzzy={fuzzy_text} blocker={blocker}")
+        print(
+            f"{record.get('created_at')} {head} matched={record.get('matched')} code={code_text} fuzzy={fuzzy_text} blocker={blocker}"
+        )
 
 
 def best_metric(records: list[dict[str, Any]], key: str) -> float | int | None:
@@ -970,7 +992,9 @@ def build_checkpoint_report(repo: Path, records: list[dict[str, Any]]) -> dict[s
     elif improvements:
         advice.append("Improvement detected, but the worktree is clean. It may already have been committed.")
     else:
-        advice.append("No measurable improvement over prior run history. Revert or keep experimenting; do not commit as progress.")
+        advice.append(
+            "No measurable improvement over prior run history. Revert or keep experimenting; do not commit as progress."
+        )
     return {
         "status": status,
         "dirty": dirty,
@@ -1069,11 +1093,15 @@ def run_variant_batch(
 
     history_before = load_history(state_dir)
     baseline = best_record(history_before)
-    best_variant = None
+    best_variant: dict[str, Any] | None = None
     results = []
     for patch in patch_paths:
         patch_id = hashlib.sha256(patch.read_bytes()).hexdigest()[:12]
-        item: dict[str, Any] = {"patch": str(patch), "patch_id": patch_id, "applied": False}
+        item: dict[str, Any] = {
+            "patch": str(patch),
+            "patch_id": patch_id,
+            "applied": False,
+        }
         check = git_apply(repo, patch, check=True)
         if check.returncode != 0:
             item["status"] = "apply_check_failed"
@@ -1096,7 +1124,9 @@ def run_variant_batch(
             item["blocker"] = result.get("blocker")
             item["metrics"] = extract_metrics(result)
             item["improved"] = metric_tuple(result) > metric_tuple(baseline)
-            if item["improved"] and (best_variant is None or metric_tuple(result) > metric_tuple(best_variant["record"])):
+            if item["improved"] and (
+                best_variant is None or metric_tuple(result) > metric_tuple(best_variant["record"])
+            ):
                 best_variant = {"patch": patch, "record": result, "summary": item}
         finally:
             revert = git_apply(repo, patch, reverse=True)
@@ -1111,7 +1141,9 @@ def run_variant_batch(
     if keep_best and best_variant:
         apply = git_apply(repo, best_variant["patch"])
         if apply.returncode != 0:
-            raise SystemExit((apply.stderr or apply.stdout).strip() or f"failed to apply best patch {best_variant['patch']}")
+            raise SystemExit(
+                (apply.stderr or apply.stdout).strip() or f"failed to apply best patch {best_variant['patch']}"
+            )
         kept = str(best_variant["patch"])
 
     return {
@@ -1131,7 +1163,6 @@ def build_gap_report(repo: Path, state_dir: Path) -> dict[str, Any]:
     info = inspect_repo(repo)
     records = load_history(state_dir)
     leads = load_steering_leads(repo, 3)
-    commands = config.get("commands", {})
     gaps = [
         {
             "area": "oracle loop",
@@ -1189,7 +1220,9 @@ def build_gap_report(repo: Path, state_dir: Path) -> dict[str, Any]:
         },
         {
             "area": "original input boundary",
-            "status": "external" if adapter == "dtk" and not info.get("dtk", {}).get("has_original_input") else "covered",
+            "status": "external"
+            if adapter == "dtk" and not info.get("dtk", {}).get("has_original_input")
+            else "covered",
             "why": "Commercial original game input is intentionally not fetched or generated by the harness.",
             "next": "User must provide legal original inputs before real ZeldaRET build/diff loops can run locally.",
         },
@@ -1273,12 +1306,12 @@ def generate_dashboard(records: list[dict[str, Any]], title: str) -> str:
 <body>
 <main>
   <h1>{html_lib.escape(title)}</h1>
-  <div class="muted">{summary['runs']} runs · last run {html_lib.escape(str(summary['last_run'] or '-'))}</div>
+  <div class="muted">{summary["runs"]} runs · last run {html_lib.escape(str(summary["last_run"] or "-"))}</div>
   <section class="grid">
     <div class="card"><div class="label">Exact Functions</div><div class="value">{last_exact}</div></div>
     <div class="card"><div class="label">Matched Code</div><div class="value">{last_code}</div></div>
     <div class="card"><div class="label">Fuzzy Match</div><div class="value">{last_fuzzy}</div></div>
-    <div class="card"><div class="label">Last Blocker</div><div class="value" style="font-size:24px">{html_lib.escape(str(summary['last_blocker'] or '-'))}</div></div>
+    <div class="card"><div class="label">Last Blocker</div><div class="value" style="font-size:24px">{html_lib.escape(str(summary["last_blocker"] or "-"))}</div></div>
   </section>
   <section class="chart">
     <div class="legend">
@@ -1332,31 +1365,33 @@ def render_svg_chart(points: list[dict[str, Any]]) -> str:
         return x, y
 
     def path_for(key: str) -> str:
-        pairs = [(p["idx"], p.get(key)) for p in points if p.get(key) is not None]
+        pairs = [(int(p["idx"]), float(p[key])) for p in points if p.get(key) is not None]
         if not pairs:
             return ""
-        coords = [xy(idx, float(value)) for idx, value in pairs]
+        coords = [xy(idx, value) for idx, value in pairs]
         return " ".join(("M" if i == 0 else "L") + f"{x:.1f},{y:.1f}" for i, (x, y) in enumerate(coords))
 
     grid = []
     for pct in [0, 20, 40, 60, 80, 100]:
         _, y = xy(0, pct)
-        grid.append(f'<line x1="{left}" x2="{width-right}" y1="{y:.1f}" y2="{y:.1f}" stroke="#d8d4cb"/>')
-        grid.append(f'<text x="8" y="{y+4:.1f}" fill="#6f7480" font-size="12">{pct}%</text>')
+        grid.append(f'<line x1="{left}" x2="{width - right}" y1="{y:.1f}" y2="{y:.1f}" stroke="#d8d4cb"/>')
+        grid.append(f'<text x="8" y="{y + 4:.1f}" fill="#6f7480" font-size="12">{pct}%</text>')
     commit_lines = []
     last_head = None
     for point in points:
         head = point.get("head")
         if head and head != last_head:
             x, _ = xy(point["idx"], 0)
-            commit_lines.append(f'<line x1="{x:.1f}" x2="{x:.1f}" y1="{top}" y2="{height-bottom}" stroke="#858c97" opacity=".35"/>')
+            commit_lines.append(
+                f'<line x1="{x:.1f}" x2="{x:.1f}" y1="{top}" y2="{height - bottom}" stroke="#858c97" opacity=".35"/>'
+            )
             last_head = head
     return f"""<svg width="{width}" height="{height}" role="img" aria-label="progress chart">
   {"".join(grid)}
   {"".join(commit_lines)}
-  <path d="{path_for('code')}" fill="none" stroke="#316bc5" stroke-width="3"/>
-  <path d="{path_for('exact')}" fill="none" stroke="#3e8f60" stroke-width="3"/>
-  <path d="{path_for('fuzzy')}" fill="none" stroke="#b46b1d" stroke-width="3"/>
+  <path d="{path_for("code")}" fill="none" stroke="#316bc5" stroke-width="3"/>
+  <path d="{path_for("exact")}" fill="none" stroke="#3e8f60" stroke-width="3"/>
+  <path d="{path_for("fuzzy")}" fill="none" stroke="#b46b1d" stroke-width="3"/>
 </svg>"""
 
 
@@ -1410,7 +1445,20 @@ def parse_structured_diff(path: Path, fmt: str) -> dict[str, Any]:
     for item in iter_dicts(data):
         keys = {str(key).lower() for key in item}
         name = item.get("function") or item.get("name") or item.get("symbol") or item.get("label")
-        if name and ({"score", "matched", "diff", "diffs", "instructions", "base", "target", "current", "candidate"} & keys):
+        if name and (
+            {
+                "score",
+                "matched",
+                "diff",
+                "diffs",
+                "instructions",
+                "base",
+                "target",
+                "current",
+                "candidate",
+            }
+            & keys
+        ):
             functions.append(
                 {
                     "name": str(name),
@@ -1419,7 +1467,9 @@ def parse_structured_diff(path: Path, fmt: str) -> dict[str, Any]:
                 }
             )
         if first_difference is None and any("mismatch" in key or "diff" in key for key in keys):
-            first_difference = {str(key): item[key] for key in item if "mismatch" in str(key).lower() or "diff" in str(key).lower()}
+            first_difference = {
+                str(key): item[key] for key in item if "mismatch" in str(key).lower() or "diff" in str(key).lower()
+            }
     text = "\n".join(fragments)
     if not text:
         text = json.dumps(data, sort_keys=True)[:12000]
@@ -1468,7 +1518,9 @@ def classify_diff(diff_text: str | None) -> dict[str, Any]:
         }
 
     text = diff_text.lower()
-    changed_lines = [line for line in diff_text.splitlines() if line.startswith(("+", "-")) and not line.startswith(("+++", "---"))]
+    changed_lines = [
+        line for line in diff_text.splitlines() if line.startswith(("+", "-")) and not line.startswith(("+++", "---"))
+    ]
     changed_blob = "\n".join(changed_lines) or diff_text
     classifications: list[dict[str, Any]] = []
 
@@ -1635,7 +1687,13 @@ def coach_history(records: list[dict[str, Any]], min_runs: int, plateau_runs: in
 
     if not records:
         advice.append("Run the oracle once with `decomp-goal run` so there is a baseline.")
-        return {"status": status, "summary": summary, "plateau": plateau, "high_score": high_score, "advice": advice}
+        return {
+            "status": status,
+            "summary": summary,
+            "plateau": plateau,
+            "high_score": high_score,
+            "advice": advice,
+        }
 
     last = records[-1]
     if last.get("matched") is True:
@@ -1644,7 +1702,9 @@ def coach_history(records: list[dict[str, Any]], min_runs: int, plateau_runs: in
             "summary": summary,
             "plateau": False,
             "high_score": True,
-            "advice": ["Current latest run is exact. Commit only if the worktree contains the source change that produced this result."],
+            "advice": [
+                "Current latest run is exact. Commit only if the worktree contains the source change that produced this result."
+            ],
         }
     if last.get("blocker"):
         return {
@@ -1732,8 +1792,8 @@ def render_monitor_prompt(repo: Path, unit: str | None, coach: dict[str, Any]) -
 
 Updated: {datetime.now(timezone.utc).isoformat()}
 Repo: `{repo}`
-Unit: `{unit or '-'}`
-Status: `{coach['status']}`
+Unit: `{unit or "-"}`
+Status: `{coach["status"]}`
 
 ## Steering Prompt
 
@@ -1749,7 +1809,13 @@ Next operator action:
 """
 
 
-def monitor_once(repo: Path, state_dir: Path, unit: str | None, dashboard_out: Path | None, title: str) -> dict[str, Any]:
+def monitor_once(
+    repo: Path,
+    state_dir: Path,
+    unit: str | None,
+    dashboard_out: Path | None,
+    title: str,
+) -> dict[str, Any]:
     records = load_history(state_dir)
     coach = coach_history(records, min_runs=3, plateau_runs=3)
     dashboard_path = None
@@ -1790,7 +1856,9 @@ def run_monitor(
             print(json.dumps(last_report, indent=2))
         else:
             coach = last_report["coach"]
-            print(f"tick={tick + 1} status={coach['status']} dashboard={last_report.get('dashboard') or '-'} steering={last_report.get('steering_prompt') or '-'}")
+            print(
+                f"tick={tick + 1} status={coach['status']} dashboard={last_report.get('dashboard') or '-'} steering={last_report.get('steering_prompt') or '-'}"
+            )
         if tick + 1 < max_ticks:
             time.sleep(interval_seconds)
     return 0
@@ -1798,11 +1866,16 @@ def run_monitor(
 
 def render_experiments(repo: Path, unit: str | None, lead: dict[str, Any]) -> str:
     classes = lead.get("classifications") or []
-    class_text = "\n".join(f"- {item['kind']}: {item['evidence']}" for item in classes) or "- No diff classification yet."
-    actions = "\n".join(f"- [ ] {action}" for action in lead.get("next_actions", [])) or "- [ ] Export a diff and classify it."
+    class_text = (
+        "\n".join(f"- {item['kind']}: {item['evidence']}" for item in classes) or "- No diff classification yet."
+    )
+    actions = (
+        "\n".join(f"- [ ] {action}" for action in lead.get("next_actions", []))
+        or "- [ ] Export a diff and classify it."
+    )
     return f"""# Decomp Goal Experiment Queue
 
-Unit: `{unit or '-'}`
+Unit: `{unit or "-"}`
 Repo: `{repo}`
 
 ## Current Mismatch Classes
@@ -1871,7 +1944,7 @@ def render_codex_runner(
         codex_parts.insert(1, "--no-alt-screen")
 
     codex_command = " ".join(shlex.quote(part) for part in codex_parts)
-    codex_command = f"{codex_command} \"$(cat {shlex.quote(str(prompt_file))})\""
+    codex_command = f'{codex_command} "$(cat {shlex.quote(str(prompt_file))})"'
 
     if mode == "tmux":
         command = " ".join(
@@ -1976,12 +2049,19 @@ def main(argv: list[str] | None = None) -> int:
     coach_p.add_argument("--plateau-runs", type=int, default=3)
     coach_p.add_argument("--json", action="store_true")
 
-    lead_p = sub.add_parser("lead", help="Classify a current asm/object diff and suggest matching hypotheses")
+    lead_p = sub.add_parser(
+        "lead",
+        help="Classify a current asm/object diff and suggest matching hypotheses",
+    )
     lead_p.add_argument("--repo", type=repo_path, default=Path.cwd())
     lead_p.add_argument("--unit")
     lead_p.add_argument("--diff-file", type=Path)
     lead_p.add_argument("--diff-json", type=Path)
-    lead_p.add_argument("--diff-format", default="auto", choices=["auto", "objdiff", "asm-differ", "generic"])
+    lead_p.add_argument(
+        "--diff-format",
+        default="auto",
+        choices=["auto", "objdiff", "asm-differ", "generic"],
+    )
     lead_p.add_argument("--json", action="store_true")
 
     experiments_p = sub.add_parser("experiments", help="Write a bounded experiment queue for the current target")
@@ -1989,11 +2069,18 @@ def main(argv: list[str] | None = None) -> int:
     experiments_p.add_argument("--unit")
     experiments_p.add_argument("--diff-file", type=Path)
     experiments_p.add_argument("--diff-json", type=Path)
-    experiments_p.add_argument("--diff-format", default="auto", choices=["auto", "objdiff", "asm-differ", "generic"])
+    experiments_p.add_argument(
+        "--diff-format",
+        default="auto",
+        choices=["auto", "objdiff", "asm-differ", "generic"],
+    )
     experiments_p.add_argument("--out", type=Path)
     experiments_p.add_argument("--json", action="store_true")
 
-    variants_p = sub.add_parser("variants", help="Apply patch variants one at a time, run the oracle, and revert losers")
+    variants_p = sub.add_parser(
+        "variants",
+        help="Apply patch variants one at a time, run the oracle, and revert losers",
+    )
     variants_p.add_argument("--repo", type=repo_path, default=Path.cwd())
     variants_p.add_argument("--unit")
     variants_p.add_argument("--state-dir", type=Path)
@@ -2006,7 +2093,11 @@ def main(argv: list[str] | None = None) -> int:
     steer_p = sub.add_parser("steer", help="Record or list external steering leads for the next goal prompt")
     steer_p.add_argument("--repo", type=repo_path, default=Path.cwd())
     steer_p.add_argument("--unit")
-    steer_p.add_argument("--source", default="human", help="human, ghidra, ida, binja, gpt-pro, objdiff, etc.")
+    steer_p.add_argument(
+        "--source",
+        default="human",
+        help="human, ghidra, ida, binja, gpt-pro, objdiff, etc.",
+    )
     steer_p.add_argument("--text")
     steer_p.add_argument("--file", type=Path)
     steer_p.add_argument("--limit", type=int, default=5)
@@ -2028,7 +2119,10 @@ def main(argv: list[str] | None = None) -> int:
     gaps_p.add_argument("--state-dir", type=Path)
     gaps_p.add_argument("--json", action="store_true")
 
-    monitor_p = sub.add_parser("monitor", help="Run a lightweight long-session monitor and write steering prompts")
+    monitor_p = sub.add_parser(
+        "monitor",
+        help="Run a lightweight long-session monitor and write steering prompts",
+    )
     monitor_p.add_argument("--repo", type=repo_path, default=Path.cwd())
     monitor_p.add_argument("--unit")
     monitor_p.add_argument("--state-dir", type=Path)
@@ -2101,10 +2195,10 @@ def main(argv: list[str] | None = None) -> int:
         print(render_goal(args.repo, args.unit, args.name, args.issue).strip())
         return 0
     if args.command == "run":
-        state_dir = (args.state_dir.resolve() if args.state_dir else default_state_dir(args.repo))
+        state_dir = args.state_dir.resolve() if args.state_dir else default_state_dir(args.repo)
         return run_harness(args.repo, args.unit, state_dir, args.json)
     if args.command == "history":
-        state_dir = (args.state_dir.resolve() if args.state_dir else default_state_dir(args.repo))
+        state_dir = args.state_dir.resolve() if args.state_dir else default_state_dir(args.repo)
         records = load_history(state_dir)
         if args.json:
             print(json.dumps({"summary": summarize_history(records), "runs": records}, indent=2))
@@ -2112,7 +2206,7 @@ def main(argv: list[str] | None = None) -> int:
             print_history(records)
         return 0
     if args.command == "checkpoint":
-        state_dir = (args.state_dir.resolve() if args.state_dir else default_state_dir(args.repo))
+        state_dir = args.state_dir.resolve() if args.state_dir else default_state_dir(args.repo)
         report = build_checkpoint_report(args.repo, load_history(state_dir))
         if args.commit:
             if not report["commit_allowed"]:
@@ -2131,7 +2225,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(report["commit"]["stdout"])
         return 0
     if args.command == "coach":
-        state_dir = (args.state_dir.resolve() if args.state_dir else default_state_dir(args.repo))
+        state_dir = args.state_dir.resolve() if args.state_dir else default_state_dir(args.repo)
         report = coach_history(load_history(state_dir), args.min_runs, args.plateau_runs)
         if args.json:
             print(json.dumps(report, indent=2))
@@ -2147,7 +2241,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "experiments":
         lead = build_lead_report(args.repo, args.unit, args.diff_file, args.diff_json, args.diff_format)
-        out = (args.out.resolve() if args.out else default_experiments_path(args.repo, args.unit))
+        out = args.out.resolve() if args.out else default_experiments_path(args.repo, args.unit)
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(render_experiments(args.repo, args.unit, lead), encoding="utf-8")
         result = {"path": str(out), "lead": lead}
@@ -2157,9 +2251,16 @@ def main(argv: list[str] | None = None) -> int:
             print(out)
         return 0
     if args.command == "variants":
-        state_dir = (args.state_dir.resolve() if args.state_dir else default_state_dir(args.repo))
+        state_dir = args.state_dir.resolve() if args.state_dir else default_state_dir(args.repo)
         patch_paths = collect_patch_paths(args.repo, args.patch_dir, args.patch)
-        report = run_variant_batch(args.repo, args.unit, state_dir, patch_paths, args.keep_best, args.allow_dirty)
+        report = run_variant_batch(
+            args.repo,
+            args.unit,
+            state_dir,
+            patch_paths,
+            args.keep_best,
+            args.allow_dirty,
+        )
         if args.json:
             print(json.dumps(report, indent=2))
         else:
@@ -2219,7 +2320,7 @@ def main(argv: list[str] | None = None) -> int:
             print_decompiler_report(report)
         return 0
     if args.command == "gaps":
-        state_dir = (args.state_dir.resolve() if args.state_dir else default_state_dir(args.repo))
+        state_dir = args.state_dir.resolve() if args.state_dir else default_state_dir(args.repo)
         report = build_gap_report(args.repo, state_dir)
         if args.json:
             print(json.dumps(report, indent=2))
@@ -2227,7 +2328,7 @@ def main(argv: list[str] | None = None) -> int:
             print_gap_report(report)
         return 0
     if args.command == "monitor":
-        state_dir = (args.state_dir.resolve() if args.state_dir else default_state_dir(args.repo))
+        state_dir = args.state_dir.resolve() if args.state_dir else default_state_dir(args.repo)
         dashboard_out = args.dashboard_out.resolve() if args.dashboard_out else None
         return run_monitor(
             args.repo,
@@ -2240,8 +2341,8 @@ def main(argv: list[str] | None = None) -> int:
             args.json,
         )
     if args.command == "dashboard":
-        state_dir = (args.state_dir.resolve() if args.state_dir else default_state_dir(args.repo))
-        out = (args.out.resolve() if args.out else default_dashboard_path(args.repo))
+        state_dir = args.state_dir.resolve() if args.state_dir else default_state_dir(args.repo)
+        out = args.out.resolve() if args.out else default_dashboard_path(args.repo)
         records = load_history(state_dir)
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(generate_dashboard(records, args.title), encoding="utf-8")
