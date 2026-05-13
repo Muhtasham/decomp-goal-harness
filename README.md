@@ -2,7 +2,8 @@
 
 A small harness for agent-driven matching decompilation work.
 
-The intended workflow is the same shape as a focused Codex `/goal` run:
+The intended workflow is the same shape as a focused Codex `/goal` run, inspired by
+[banteg](https://x.com/banteg)'s public Wind Waker matching-decomp experiments.
 
 1. choose one translation unit or function,
 2. configure/build the local decomp project,
@@ -185,7 +186,7 @@ The tmux path is closer to the banteg workflow: let the agent run, inspect the d
 
 ## Banteg-inspired loop
 
-The harness is designed around the workflow shown in the Wind Waker `d_a_pz` run:
+The harness is designed around the workflow shown in banteg's Wind Waker `d_a_pz` run:
 
 - one translation unit goal at a time,
 - no fakematching or forbidden decomp tricks,
@@ -195,6 +196,10 @@ The harness is designed around the workflow shown in the Wind Waker `d_a_pz` run
 - record the remaining mismatch class when stuck: string pool, relocation, branch shape, regalloc, weak/template ordering, inline, missing type, or missing original input.
 
 The harness is intentionally an oracle wrapper, not an autonomous source mutator. A `/goal` agent can consume its target list, goal packet, JSON run records, and dashboard while doing the actual source edits in the project worktree.
+
+## Credits
+
+Core idea and workflow inspiration: [banteg on X](https://x.com/banteg) / [banteg on GitHub](https://github.com/banteg), especially the public Wind Waker matching-decomp runs that showed how well scoped `/goal` agents fit this problem.
 
 ## Example TWW goal packet
 
