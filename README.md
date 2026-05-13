@@ -95,6 +95,12 @@ decomp-goal run --repo /path/to/project --unit attempt.c
 ```
 
 Run records are written under the repo's Git metadata path by default, e.g. `.git/decomp-goal/runs/`, so the harness does not dirty the decomp worktree.
+This repo includes a root `decomp-goal.toml` wired to the toy oracle, so the harness can audit itself:
+
+```bash
+uv run decomp-goal gaps --repo .
+uv run decomp-goal run --repo . --unit attempt.c
+```
 
 View the run history:
 

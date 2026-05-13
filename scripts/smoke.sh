@@ -14,6 +14,9 @@ if ! command -v uv >/dev/null 2>&1; then
 fi
 
 uv run --project "$ROOT" python -m compileall "$ROOT/src" "$ROOT/examples/toy_match/score.py" >/dev/null
+uv run --project "$ROOT" decomp-goal inspect --repo "$ROOT" --json >/dev/null
+uv run --project "$ROOT" decomp-goal gaps --repo "$ROOT" --state-dir "$STATE_DIR" --json >/dev/null
+uv run --project "$ROOT" decomp-goal run --repo "$ROOT" --unit attempt.c --state-dir "$STATE_DIR/root" --json >/dev/null
 uv run --project "$ROOT" decomp-goal inspect --repo "$ROOT/examples/toy_match" --json >/dev/null
 uv run --project "$ROOT" decomp-goal targets --repo "$ROOT/examples/toy_match" --rank --json >/dev/null
 uv run --project "$ROOT" decomp-goal run --repo "$ROOT/examples/toy_match" --unit attempt.c --state-dir "$STATE_DIR" --json >/dev/null
