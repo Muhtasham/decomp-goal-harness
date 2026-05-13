@@ -124,6 +124,37 @@ def git_info(repo: Path) -> dict[str, str | None]:
     }
 
 
+def git_path(repo: Path, relative_path: str) -> Path | None:
+    proc = subprocess.run(
+        ["git", "rev-parse", "--git-path", relative_path],
+        cwd=repo,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        return None
+    raw_path = proc.stdout.strip()
+    if not raw_path:
+        return None
+    path = Path(raw_path)
+    if not path.is_absolute():
+        path = repo / path
+    return path.resolve()
+
+
+def default_state_dir(repo: Path) -> Path:
+    return git_path(repo, "decomp-goal/runs") or (repo / ".decomp-goal" / "runs").resolve()
+
+
+def default_dashboard_path(repo: Path) -> Path:
+    return git_path(repo, "decomp-goal/dashboard.html") or (repo / ".decomp-goal" / "dashboard.html").resolve()
+
+
+def default_prompt_path(repo: Path) -> Path:
+    return git_path(repo, "decomp-goal/goal.txt") or (repo / ".decomp-goal" / "goal.txt").resolve()
+
+
 def inspect_repo(repo: Path) -> dict[str, Any]:
     config = load_config(repo)
     adapter = detect_adapter(repo, config)
@@ -766,6 +797,64 @@ def render_svg_chart(points: list[dict[str, Any]]) -> str:
 </svg>"""
 
 
+def render_codex_runner(
+    repo: Path,
+    unit: str | None,
+    name: str | None,
+    issue: str | None,
+    mode: str,
+    session: str,
+    model: str,
+    sandbox: str,
+    approval: str,
+) -> dict[str, str]:
+    prompt = render_goal(repo, unit, name, issue).strip() + "\n"
+    prompt_file = default_prompt_path(repo)
+    prompt_file.parent.mkdir(parents=True, exist_ok=True)
+    prompt_file.write_text(prompt, encoding="utf-8")
+
+    codex_parts = [
+        "codex",
+        "--cd",
+        str(repo),
+        "--model",
+        model,
+        "--sandbox",
+        sandbox,
+        "--ask-for-approval",
+        approval,
+    ]
+    if mode == "exec":
+        codex_parts.insert(1, "exec")
+    else:
+        codex_parts.insert(1, "--no-alt-screen")
+
+    codex_command = " ".join(shlex.quote(part) for part in codex_parts)
+    codex_command = f"{codex_command} \"$(cat {shlex.quote(str(prompt_file))})\""
+
+    if mode == "tmux":
+        command = " ".join(
+            [
+                "tmux",
+                "new-session",
+                "-d",
+                "-s",
+                shlex.quote(session),
+                "-c",
+                shlex.quote(str(repo)),
+                shlex.quote(codex_command),
+            ]
+        )
+    else:
+        command = codex_command
+
+    return {
+        "prompt_file": str(prompt_file),
+        "command": command,
+        "mode": mode,
+    }
+
+
 def print_human_run(result: dict[str, Any]) -> None:
     print(f"adapter: {result['adapter']}")
     print(f"repo: {result['repo']}")
@@ -837,6 +926,19 @@ def main(argv: list[str] | None = None) -> int:
     dashboard_p.add_argument("--out", type=Path)
     dashboard_p.add_argument("--title", default="Decomp Goal Progress")
 
+    codex_p = sub.add_parser("codex", help="Write a goal prompt and print or launch a Codex runner command")
+    codex_p.add_argument("--repo", type=repo_path, default=Path.cwd())
+    codex_p.add_argument("--unit")
+    codex_p.add_argument("--name")
+    codex_p.add_argument("--issue")
+    codex_p.add_argument("--mode", choices=["exec", "tmux"], default="tmux")
+    codex_p.add_argument("--session", default="decomp-goal")
+    codex_p.add_argument("--model", default="gpt-5.5")
+    codex_p.add_argument("--sandbox", default="workspace-write")
+    codex_p.add_argument("--approval", default="on-request")
+    codex_p.add_argument("--launch", action="store_true")
+    codex_p.add_argument("--json", action="store_true")
+
     args = parser.parse_args(argv)
     if args.command == "projects":
         projects = fetch_decompdev_projects(args.query, args.platform, args.limit)
@@ -879,10 +981,10 @@ def main(argv: list[str] | None = None) -> int:
         print(render_goal(args.repo, args.unit, args.name, args.issue).strip())
         return 0
     if args.command == "run":
-        state_dir = (args.state_dir or (args.repo / ".decomp-goal" / "runs")).resolve()
+        state_dir = (args.state_dir.resolve() if args.state_dir else default_state_dir(args.repo))
         return run_harness(args.repo, args.unit, state_dir, args.json)
     if args.command == "history":
-        state_dir = (args.state_dir or (args.repo / ".decomp-goal" / "runs")).resolve()
+        state_dir = (args.state_dir.resolve() if args.state_dir else default_state_dir(args.repo))
         records = load_history(state_dir)
         if args.json:
             print(json.dumps({"summary": summarize_history(records), "runs": records}, indent=2))
@@ -890,12 +992,40 @@ def main(argv: list[str] | None = None) -> int:
             print_history(records)
         return 0
     if args.command == "dashboard":
-        state_dir = (args.state_dir or (args.repo / ".decomp-goal" / "runs")).resolve()
-        out = (args.out or (args.repo / ".decomp-goal" / "dashboard.html")).resolve()
+        state_dir = (args.state_dir.resolve() if args.state_dir else default_state_dir(args.repo))
+        out = (args.out.resolve() if args.out else default_dashboard_path(args.repo))
         records = load_history(state_dir)
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(generate_dashboard(records, args.title), encoding="utf-8")
         print(out)
+        return 0
+    if args.command == "codex":
+        runner = render_codex_runner(
+            args.repo,
+            args.unit,
+            args.name,
+            args.issue,
+            args.mode,
+            args.session,
+            args.model,
+            args.sandbox,
+            args.approval,
+        )
+        if args.launch:
+            required_tools = ["codex"]
+            if args.mode == "tmux":
+                required_tools.append("tmux")
+            for required in required_tools:
+                if shutil.which(required) is None:
+                    raise SystemExit(f"{required} not found")
+            proc = subprocess.run(runner["command"], shell=True, check=False)
+            if proc.returncode != 0:
+                return proc.returncode
+        if args.json:
+            print(json.dumps(runner, indent=2))
+        else:
+            print(f"prompt_file: {runner['prompt_file']}")
+            print(runner["command"])
         return 0
     return 2
 

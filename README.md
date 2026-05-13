@@ -15,13 +15,13 @@ The harness does not decompile by itself. It gives an agent a repeatable loop an
 ## Install locally
 
 ```bash
-python3 -m pip install -e .
+uv sync
 ```
 
 Or run without installing:
 
 ```bash
-PYTHONPATH=src python3 -m decomp_goal --help
+uv run decomp-goal --help
 ```
 
 ## Commands
@@ -72,7 +72,7 @@ Run one configure/build/score pass and write a JSON run record:
 decomp-goal run --repo /path/to/project --unit attempt.c
 ```
 
-Run records are written to `<repo>/.decomp-goal/runs/` by default.
+Run records are written under the repo's Git metadata path by default, e.g. `.git/decomp-goal/runs/`, so the harness does not dirty the decomp worktree.
 
 View the run history:
 
@@ -88,6 +88,18 @@ decomp-goal dashboard --repo /path/to/project --title "Princess Zelda TU Progres
 
 The dashboard tracks exact functions, matched code, fuzzy score, blockers, and commit/head change markers from stored run records.
 
+Write a goal prompt and print a Codex CLI runner command:
+
+```bash
+decomp-goal codex \
+  --repo /path/to/tww \
+  --unit src/d/actor/d_a_obj_mmrr.cpp \
+  --name "Mirror object" \
+  --issue https://github.com/zeldaret/tww/issues/423 \
+  --mode tmux \
+  --session tww-mmrr
+```
+
 ## Adapters
 
 ### Generic TOML adapter
@@ -101,9 +113,9 @@ adapter = "generic"
 default_unit = "attempt.c"
 
 [commands]
-build = "python3 score.py --candidate {unit} --build-only"
-score = "python3 score.py --candidate {unit} --json"
-diff = "python3 score.py --candidate {unit} --diff"
+build = "uv run --project ../.. python score.py --candidate {unit} --build-only"
+score = "uv run --project ../.. python score.py --candidate {unit} --json"
+diff = "uv run --project ../.. python score.py --candidate {unit} --diff"
 ```
 
 The score command should print JSON with at least:
@@ -136,13 +148,13 @@ The harness does not fetch or create original game inputs. If a project requires
 Exact match:
 
 ```bash
-PYTHONPATH=src python3 -m decomp_goal run --repo examples/toy_match --unit attempt.c
+uv run decomp-goal run --repo examples/toy_match --unit attempt.c
 ```
 
 Known non-match:
 
 ```bash
-PYTHONPATH=src python3 -m decomp_goal run --repo examples/toy_match --unit attempt.start.c
+uv run decomp-goal run --repo examples/toy_match --unit attempt.start.c
 ```
 
 This fixture proves the harness loop without requiring a commercial game image. Real ZeldaRET projects still use the project oracle, usually `objdiff`.
@@ -150,8 +162,26 @@ This fixture proves the harness loop without requiring a commercial game image. 
 Generate the toy dashboard:
 
 ```bash
-PYTHONPATH=src python3 -m decomp_goal dashboard --repo examples/toy_match --title "Toy Match Progress"
+uv run decomp-goal dashboard --repo examples/toy_match --title "Toy Match Progress"
 ```
+
+## Runner model
+
+The harness does not need to own Codex. It creates the task packet and records oracle results; Codex is one runner.
+
+Use `codex exec` for bounded, non-interactive passes:
+
+```bash
+uv run decomp-goal codex --repo /path/to/tww --unit src/d/actor/d_a_obj_mmrr.cpp --mode exec
+```
+
+Use `tmux` plus interactive Codex for long matching sessions where steering matters:
+
+```bash
+uv run decomp-goal codex --repo /path/to/tww --unit src/d/actor/d_a_obj_mmrr.cpp --mode tmux --session tww-mmrr --launch
+```
+
+The tmux path is closer to the banteg workflow: let the agent run, inspect the dashboard/history, and inject steering when it gets stuck after a near-match or layout cascade. The generated prompt is written under the repo's Git metadata path so it can be reviewed or reused without creating untracked files.
 
 ## Banteg-inspired loop
 

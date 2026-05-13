@@ -1,5 +1,6 @@
 __pycache__/
 **/.decomp-goal/
+.venv/
 .pytest_cache/
 *.egg-info/
 dist/
