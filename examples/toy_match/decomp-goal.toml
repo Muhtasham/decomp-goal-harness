@@ -1,0 +1,10 @@
+[project]
+name = "toy-match"
+adapter = "generic"
+default_unit = "attempt.c"
+goal = "Recover candidate C that compiles into the same object as original.c."
+
+[commands]
+build = "python3 score.py --candidate {unit} --build-only"
+score = "python3 score.py --candidate {unit} --json"
+diff = "python3 score.py --candidate {unit} --diff"
