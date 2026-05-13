@@ -1,6 +1,10 @@
 # decomp-goal-harness
 
-A small harness for agent-driven matching decompilation work.
+## About
+
+`decomp-goal-harness` is a lightweight command-line harness for running agent-driven matching decompilation goals. It helps find unfinished decompilation targets, generate scoped Codex goal prompts, run the local build/diff oracle, store structured progress records, and render a small progress dashboard.
+
+It is designed for hard-mode matching projects where the goal is C/C++ source that compiles back to the same binary as the original. The harness does not include game assets, does not patch binaries, and does not decompile by itself. It gives a Codex-style agent a tight, repeatable compile-diff-edit loop.
 
 The intended workflow is the same shape as a focused Codex `/goal` run, inspired by
 [banteg](https://x.com/banteg)'s public Wind Waker matching-decomp experiments.
