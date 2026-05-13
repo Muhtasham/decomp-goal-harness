@@ -109,6 +109,45 @@ def git_status_short(repo: Path) -> str:
     return proc.stdout.strip() if proc.returncode == 0 else ""
 
 
+def tracked_worktree_diff(repo: Path) -> str:
+    proc = run_git(repo, ["diff", "--binary", "HEAD", "--"])
+    return proc.stdout if proc.returncode == 0 else ""
+
+
+def untracked_file_fingerprints(repo: Path) -> list[dict[str, str]]:
+    proc = run_git(repo, ["ls-files", "--others", "--exclude-standard", "-z"])
+    if proc.returncode != 0:
+        return []
+    fingerprints = []
+    for raw_path in proc.stdout.split("\0"):
+        if not raw_path:
+            continue
+        path = repo / raw_path
+        if not path.is_file():
+            continue
+        fingerprints.append(
+            {
+                "path": raw_path,
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            }
+        )
+    return fingerprints
+
+
+def worktree_fingerprint(repo: Path) -> dict[str, Any]:
+    status = git_status_short(repo)
+    tracked_diff = tracked_worktree_diff(repo)
+    untracked = untracked_file_fingerprints(repo)
+    payload = {
+        "head": git_info(repo).get("head"),
+        "status": status,
+        "tracked_diff_sha256": hashlib.sha256(tracked_diff.encode("utf-8", "surrogateescape")).hexdigest(),
+        "untracked": untracked,
+    }
+    payload["sha256"] = hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
+    return payload
+
+
 def git_info(repo: Path) -> dict[str, str | None]:
     def git(args: list[str]) -> str | None:
         try:
@@ -176,6 +215,12 @@ def default_decompiler_dir(repo: Path) -> Path:
 
 def default_monitor_path(repo: Path) -> Path:
     return git_path(repo, "decomp-goal/monitor.md") or (repo / ".decomp-goal" / "monitor.md").resolve()
+
+
+def optional_repo_path(repo: Path, path: Path | None) -> Path | None:
+    if path is None:
+        return None
+    return path if path.is_absolute() else repo / path
 
 
 def inspect_repo(repo: Path) -> dict[str, Any]:
@@ -463,8 +508,8 @@ def rank_targets(repo: Path, targets: list[dict[str, Any]]) -> list[dict[str, An
     return ranked
 
 
-def write_steering_lead(repo: Path, unit: str | None, source: str, text: str) -> Path:
-    leads_dir = default_leads_dir(repo)
+def write_steering_lead(repo: Path, unit: str | None, source: str, text: str, leads_dir: Path | None = None) -> Path:
+    leads_dir = leads_dir or default_leads_dir(repo)
     leads_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     path = leads_dir / f"{stamp}-{safe_slug(source, 'lead')}.md"
@@ -480,8 +525,8 @@ Unit: {unit or "-"}
     return path
 
 
-def load_steering_leads(repo: Path, limit: int = 5) -> list[dict[str, str]]:
-    leads_dir = default_leads_dir(repo)
+def load_steering_leads(repo: Path, limit: int = 5, leads_dir: Path | None = None) -> list[dict[str, str]]:
+    leads_dir = leads_dir or default_leads_dir(repo)
     if not leads_dir.exists():
         return []
     leads = []
@@ -504,8 +549,8 @@ def load_steering_leads(repo: Path, limit: int = 5) -> list[dict[str, str]]:
     return leads
 
 
-def render_recent_leads(repo: Path, limit: int = 3) -> str:
-    leads = load_steering_leads(repo, limit)
+def render_recent_leads(repo: Path, limit: int = 3, leads_dir: Path | None = None) -> str:
+    leads = load_steering_leads(repo, limit, leads_dir)
     if not leads:
         return ""
     blocks = []
@@ -525,8 +570,10 @@ def write_decompiler_record(
     pseudocode: str,
     notes: str | None,
     confidence: str | None,
+    decompiler_dir: Path | None = None,
+    leads_dir: Path | None = None,
 ) -> Path:
-    root = default_decompiler_dir(repo)
+    root = decompiler_dir or default_decompiler_dir(repo)
     root.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     name = f"{stamp}-{safe_slug(source, 'decompiler')}-{safe_slug(function or unit, 'function')}.json"
@@ -546,12 +593,18 @@ def write_decompiler_record(
         unit,
         source,
         f"Decompiler lead for `{function or unit or '-'}`.\n\n{payload['notes']}\n\n{payload['pseudocode']}".strip(),
+        leads_dir,
     )
     return path
 
 
-def load_decompiler_records(repo: Path, unit: str | None = None, function: str | None = None) -> list[dict[str, Any]]:
-    root = default_decompiler_dir(repo)
+def load_decompiler_records(
+    repo: Path,
+    unit: str | None = None,
+    function: str | None = None,
+    decompiler_dir: Path | None = None,
+) -> list[dict[str, Any]]:
+    root = decompiler_dir or default_decompiler_dir(repo)
     if not root.exists():
         return []
     records = []
@@ -579,8 +632,13 @@ def normalize_pseudocode(value: str) -> str:
     return "\n".join(lines)
 
 
-def build_decompiler_report(repo: Path, unit: str | None, function: str | None) -> dict[str, Any]:
-    records = load_decompiler_records(repo, unit, function)
+def build_decompiler_report(
+    repo: Path,
+    unit: str | None,
+    function: str | None,
+    decompiler_dir: Path | None = None,
+) -> dict[str, Any]:
+    records = load_decompiler_records(repo, unit, function, decompiler_dir)
     groups: dict[str, list[dict[str, Any]]] = {}
     for record in records:
         key = record.get("function") or record.get("unit") or "unknown"
@@ -631,13 +689,19 @@ def print_decompiler_report(report: dict[str, Any]) -> None:
         print(f"- {item['function']}: {agree}; sources={','.join(item['sources'])}; classes={classes}")
 
 
-def render_goal(repo: Path, unit: str | None, name: str | None, issue: str | None) -> str:
+def render_goal(
+    repo: Path,
+    unit: str | None,
+    name: str | None,
+    issue: str | None,
+    leads_dir: Path | None = None,
+) -> str:
     config = load_config(repo)
     adapter = detect_adapter(repo, config)
     project_name = name or config.get("project", {}).get("name") or repo.name
     unit = unit or config.get("project", {}).get("default_unit") or "<target source file>"
     issue_text = f"\nUpstream issue/context: {issue}" if issue else ""
-    recent_leads = render_recent_leads(repo)
+    recent_leads = render_recent_leads(repo, leads_dir=leads_dir)
     if adapter == "dtk":
         validation = "Run `python3 configure.py`, `ninja`, then inspect objdiff/progress for the target TU."
     else:
@@ -788,6 +852,7 @@ def base_result(
         "adapter": adapter,
         "unit": unit,
         "git": git_info(repo),
+        "worktree_fingerprint": worktree_fingerprint(repo),
         "matched": matched,
         "blocker": blocker,
         "commands": [],
@@ -941,6 +1006,7 @@ def best_metric(records: list[dict[str, Any]], key: str) -> float | int | None:
 
 def build_checkpoint_report(repo: Path, records: list[dict[str, Any]]) -> dict[str, Any]:
     dirty = bool(git_status_short(repo))
+    current_fingerprint = worktree_fingerprint(repo)
     if not records:
         return {
             "status": "no_history",
@@ -948,11 +1014,12 @@ def build_checkpoint_report(repo: Path, records: list[dict[str, Any]]) -> dict[s
             "commit_allowed": False,
             "improvements": [],
             "recommended_message": None,
+            "fingerprint_matches": False,
             "advice": ["Run `decomp-goal run` first so the checkpoint has an oracle result."],
         }
 
     latest = records[-1]
-    previous = records[:-1]
+    previous = [record for record in records[:-1] if record.get("unit") == latest.get("unit")]
     latest_metrics = latest.get("_metrics") or {}
     improvements = []
 
@@ -963,8 +1030,12 @@ def build_checkpoint_report(repo: Path, records: list[dict[str, Any]]) -> dict[s
             "commit_allowed": False,
             "improvements": [],
             "recommended_message": None,
+            "fingerprint_matches": False,
             "advice": [f"Do not commit this checkpoint yet; latest run is blocked by {latest['blocker']}."],
         }
+
+    latest_fingerprint = latest.get("worktree_fingerprint") or {}
+    fingerprint_matches = latest_fingerprint.get("sha256") == current_fingerprint.get("sha256")
 
     if latest.get("matched") is True and not any(record.get("matched") is True for record in previous):
         improvements.append({"metric": "matched", "before": False, "after": True})
@@ -985,9 +1056,13 @@ def build_checkpoint_report(repo: Path, records: list[dict[str, Any]]) -> dict[s
         status = "matched"
     unit = latest.get("unit") or "target"
     recommended_message = f"decomp: {'match' if status == 'matched' else 'improve'} {unit}"
-    commit_allowed = dirty and bool(improvements)
+    commit_allowed = dirty and bool(improvements) and fingerprint_matches
     advice = []
-    if improvements and dirty:
+    if not fingerprint_matches:
+        advice.append(
+            "Do not commit this checkpoint yet; the latest oracle run does not match the current worktree fingerprint."
+        )
+    elif improvements and dirty:
         advice.append("Commit is allowed: latest oracle record improves over prior history and the worktree is dirty.")
     elif improvements:
         advice.append("Improvement detected, but the worktree is clean. It may already have been committed.")
@@ -1002,6 +1077,7 @@ def build_checkpoint_report(repo: Path, records: list[dict[str, Any]]) -> dict[s
         "improvements": improvements,
         "recommended_message": recommended_message,
         "latest_record": latest.get("_path"),
+        "fingerprint_matches": fingerprint_matches,
         "advice": advice,
     }
 
@@ -1010,6 +1086,7 @@ def print_checkpoint_report(report: dict[str, Any]) -> None:
     print(f"status: {report['status']}")
     print(f"dirty: {report['dirty']}")
     print(f"commit_allowed: {report['commit_allowed']}")
+    print(f"fingerprint_matches: {report.get('fingerprint_matches')}")
     if report.get("recommended_message"):
         print(f"recommended_message: {report['recommended_message']}")
     if report.get("improvements"):
@@ -1090,9 +1167,11 @@ def run_variant_batch(
     initial_dirty = git_status_short(repo)
     if initial_dirty and not allow_dirty:
         raise SystemExit("worktree is dirty; commit/stash/revert before running variants, or pass --allow-dirty")
+    initial_fingerprint = worktree_fingerprint(repo)
 
     history_before = load_history(state_dir)
-    baseline = best_record(history_before)
+    unit_history = [record for record in history_before if unit is None or record.get("unit") == unit]
+    baseline = best_record(unit_history)
     best_variant: dict[str, Any] | None = None
     results = []
     for patch in patch_paths:
@@ -1135,6 +1214,12 @@ def run_variant_batch(
                 item["status"] = "revert_failed"
                 results.append(item)
                 raise SystemExit(f"failed to reverse patch {patch}: {item['revert_error']}")
+            after_revert = worktree_fingerprint(repo)
+            if after_revert.get("sha256") != initial_fingerprint.get("sha256"):
+                item["side_effect_error"] = "oracle or patch left tracked/untracked worktree changes after revert"
+                item["status"] = "side_effect_failed"
+                results.append(item)
+                raise SystemExit(item["side_effect_error"])
         results.append(item)
 
     kept = None
@@ -1163,12 +1248,22 @@ def build_gap_report(repo: Path, state_dir: Path) -> dict[str, Any]:
     info = inspect_repo(repo)
     records = load_history(state_dir)
     leads = load_steering_leads(repo, 3)
+    commands = config.get("commands", {})
+    dtk_ready = adapter == "dtk" and bool(info.get("dtk", {}).get("configure_py"))
+    generic_ready = adapter == "generic" and bool(commands.get("score") or commands.get("build"))
+    oracle_status = "covered" if dtk_ready or generic_ready else "open"
+    has_diff_oracle = bool(commands.get("diff") or info.get("dtk", {}).get("objdiff_json"))
+    diff_status = "covered" if has_diff_oracle else ("ready" if oracle_status != "open" else "open")
     gaps = [
         {
             "area": "oracle loop",
-            "status": "covered",
+            "status": oracle_status,
             "why": "The harness can run configure/build/score and persist JSON run records.",
-            "next": "Keep project-specific score commands honest and cheap enough for repeated agent use.",
+            "next": (
+                "Keep project-specific score commands honest and cheap enough for repeated agent use."
+                if oracle_status == "covered"
+                else "Add `decomp-goal.toml` commands or use a DTK-style project with `configure.py`."
+            ),
         },
         {
             "area": "improvement commits",
@@ -1190,9 +1285,13 @@ def build_gap_report(repo: Path, state_dir: Path) -> dict[str, Any]:
         },
         {
             "area": "diff intelligence",
-            "status": "covered",
+            "status": diff_status,
             "why": "`lead` classifies text diffs and can ingest structured objdiff/asm-differ-style JSON with `--diff-json`.",
-            "next": "Prefer `--diff-json` when the project can export it; keep text diff as fallback.",
+            "next": (
+                "Prefer `--diff-json` when the project can export it; keep text diff as fallback."
+                if diff_status != "open"
+                else "Configure `[commands].diff` or pass `--diff-json` / `--diff-file` when asking for leads."
+            ),
         },
         {
             "area": "variant search",
@@ -1848,19 +1947,20 @@ def run_monitor(
     max_ticks: int,
     json_output: bool,
 ) -> int:
-    last_report = None
+    reports = []
     for tick in range(max(1, max_ticks)):
-        last_report = monitor_once(repo, state_dir, unit, dashboard_out, title)
-        last_report["tick"] = tick + 1
-        if json_output:
-            print(json.dumps(last_report, indent=2))
-        else:
-            coach = last_report["coach"]
+        report = monitor_once(repo, state_dir, unit, dashboard_out, title)
+        report["tick"] = tick + 1
+        reports.append(report)
+        if not json_output:
+            coach = report["coach"]
             print(
-                f"tick={tick + 1} status={coach['status']} dashboard={last_report.get('dashboard') or '-'} steering={last_report.get('steering_prompt') or '-'}"
+                f"tick={tick + 1} status={coach['status']} dashboard={report.get('dashboard') or '-'} steering={report.get('steering_prompt') or '-'}"
             )
         if tick + 1 < max_ticks:
             time.sleep(interval_seconds)
+    if json_output:
+        print(json.dumps(reports, indent=2))
     return 0
 
 
@@ -1915,9 +2015,11 @@ def render_codex_runner(
     reasoning_effort: str | None,
     sandbox: str,
     approval: str,
+    prompt_file: Path | None = None,
+    leads_dir: Path | None = None,
 ) -> dict[str, str]:
-    prompt = render_goal(repo, unit, name, issue).strip() + "\n"
-    prompt_file = default_prompt_path(repo)
+    prompt = render_goal(repo, unit, name, issue, leads_dir).strip() + "\n"
+    prompt_file = prompt_file or default_prompt_path(repo)
     prompt_file.parent.mkdir(parents=True, exist_ok=True)
     prompt_file.write_text(prompt, encoding="utf-8")
 
@@ -2100,6 +2202,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     steer_p.add_argument("--text")
     steer_p.add_argument("--file", type=Path)
+    steer_p.add_argument("--leads-dir", type=Path)
     steer_p.add_argument("--limit", type=int, default=5)
     steer_p.add_argument("--json", action="store_true")
 
@@ -2112,6 +2215,8 @@ def main(argv: list[str] | None = None) -> int:
     decompilers_p.add_argument("--file", type=Path)
     decompilers_p.add_argument("--notes")
     decompilers_p.add_argument("--confidence", choices=["low", "medium", "high"])
+    decompilers_p.add_argument("--decompiler-dir", type=Path)
+    decompilers_p.add_argument("--leads-dir", type=Path)
     decompilers_p.add_argument("--json", action="store_true")
 
     gaps_p = sub.add_parser("gaps", help="Audit missing pieces against a banteg-style decomp goal loop")
@@ -2149,6 +2254,8 @@ def main(argv: list[str] | None = None) -> int:
     codex_p.add_argument("--reasoning-effort", choices=["low", "medium", "high", "xhigh"])
     codex_p.add_argument("--sandbox", default="workspace-write")
     codex_p.add_argument("--approval", default="on-request")
+    codex_p.add_argument("--prompt-file", type=Path)
+    codex_p.add_argument("--leads-dir", type=Path)
     codex_p.add_argument("--launch", action="store_true")
     codex_p.add_argument("--json", action="store_true")
 
@@ -2233,14 +2340,26 @@ def main(argv: list[str] | None = None) -> int:
             print_coach_report(report)
         return 0
     if args.command == "lead":
-        report = build_lead_report(args.repo, args.unit, args.diff_file, args.diff_json, args.diff_format)
+        report = build_lead_report(
+            args.repo,
+            args.unit,
+            optional_repo_path(args.repo, args.diff_file),
+            optional_repo_path(args.repo, args.diff_json),
+            args.diff_format,
+        )
         if args.json:
             print(json.dumps(report, indent=2))
         else:
             print_lead_report(report)
         return 0
     if args.command == "experiments":
-        lead = build_lead_report(args.repo, args.unit, args.diff_file, args.diff_json, args.diff_format)
+        lead = build_lead_report(
+            args.repo,
+            args.unit,
+            optional_repo_path(args.repo, args.diff_file),
+            optional_repo_path(args.repo, args.diff_json),
+            args.diff_format,
+        )
         out = args.out.resolve() if args.out else default_experiments_path(args.repo, args.unit)
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(render_experiments(args.repo, args.unit, lead), encoding="utf-8")
@@ -2271,18 +2390,24 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "steer":
         parts = []
         if args.file:
-            parts.append(args.file.read_text(encoding="utf-8"))
+            parts.append(resolve_repo_path(args.repo, args.file).read_text(encoding="utf-8"))
         if args.text:
             parts.append(args.text)
         if parts:
-            path = write_steering_lead(args.repo, args.unit, args.source, "\n\n".join(parts))
+            path = write_steering_lead(
+                args.repo,
+                args.unit,
+                args.source,
+                "\n\n".join(parts),
+                optional_repo_path(args.repo, args.leads_dir),
+            )
             result = {"path": str(path)}
             if args.json:
                 print(json.dumps(result, indent=2))
             else:
                 print(path)
             return 0
-        leads = load_steering_leads(args.repo, args.limit)
+        leads = load_steering_leads(args.repo, args.limit, optional_repo_path(args.repo, args.leads_dir))
         if args.json:
             print(json.dumps(leads, indent=2))
         else:
@@ -2292,7 +2417,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "decompilers":
         parts = []
         if args.file:
-            parts.append(args.file.read_text(encoding="utf-8"))
+            parts.append(resolve_repo_path(args.repo, args.file).read_text(encoding="utf-8"))
         if args.pseudocode:
             parts.append(args.pseudocode)
         if parts:
@@ -2306,6 +2431,8 @@ def main(argv: list[str] | None = None) -> int:
                 "\n\n".join(parts),
                 args.notes,
                 args.confidence,
+                optional_repo_path(args.repo, args.decompiler_dir),
+                optional_repo_path(args.repo, args.leads_dir),
             )
             result = {"path": str(path)}
             if args.json:
@@ -2313,7 +2440,12 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 print(path)
             return 0
-        report = build_decompiler_report(args.repo, args.unit, args.function)
+        report = build_decompiler_report(
+            args.repo,
+            args.unit,
+            args.function,
+            optional_repo_path(args.repo, args.decompiler_dir),
+        )
         if args.json:
             print(json.dumps(report, indent=2))
         else:
@@ -2360,6 +2492,8 @@ def main(argv: list[str] | None = None) -> int:
             args.reasoning_effort,
             args.sandbox,
             args.approval,
+            optional_repo_path(args.repo, args.prompt_file),
+            optional_repo_path(args.repo, args.leads_dir),
         )
         if args.launch:
             required_tools = ["codex"]

@@ -4,6 +4,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 STATE_DIR="$(mktemp -d)"
 trap 'rm -rf "$STATE_DIR"' EXIT
+LEADS_DIR="$STATE_DIR/leads"
+DECOMPILER_DIR="$STATE_DIR/decompilers"
+PROMPT_FILE="$STATE_DIR/goal.txt"
 
 if ! command -v uv >/dev/null 2>&1; then
   echo "uv is required" >&2
@@ -31,14 +34,15 @@ VARIANT_STATE="$STATE_DIR/variants"
 mkdir -p "$VARIANT_STATE"
 uv run --project "$ROOT" decomp-goal run --repo "$ROOT/examples/toy_match" --unit attempt.start.c --state-dir "$VARIANT_STATE" --json >/dev/null || true
 uv run --project "$ROOT" decomp-goal variants --repo "$ROOT/examples/toy_match" --unit attempt.start.c --state-dir "$VARIANT_STATE" --patch-dir "$ROOT/examples/toy_match/variants" --allow-dirty --json >/dev/null
-uv run --project "$ROOT" decomp-goal steer --repo "$ROOT/examples/toy_match" --unit attempt.start.c --source smoke --text "branch condition lead" --json >/dev/null
-uv run --project "$ROOT" decomp-goal steer --repo "$ROOT/examples/toy_match" --json >/dev/null
-uv run --project "$ROOT" decomp-goal decompilers --repo "$ROOT/examples/toy_match" --unit attempt.start.c --function score_room --source ghidra --file "$ROOT/examples/toy_match/decompiler-ghidra.txt" --notes "branch and constant shape agree" --confidence high --json >/dev/null
-uv run --project "$ROOT" decomp-goal decompilers --repo "$ROOT/examples/toy_match" --unit attempt.start.c --json >/dev/null
+uv run --project "$ROOT" decomp-goal steer --repo "$ROOT/examples/toy_match" --unit attempt.start.c --source smoke --text "branch condition lead" --leads-dir "$LEADS_DIR" --json >/dev/null
+uv run --project "$ROOT" decomp-goal steer --repo "$ROOT/examples/toy_match" --leads-dir "$LEADS_DIR" --json >/dev/null
+uv run --project "$ROOT" decomp-goal decompilers --repo "$ROOT/examples/toy_match" --unit attempt.start.c --function score_room --source ghidra --file "$ROOT/examples/toy_match/decompiler-ghidra.txt" --notes "branch and constant shape agree" --confidence high --decompiler-dir "$DECOMPILER_DIR" --leads-dir "$LEADS_DIR" --json >/dev/null
+uv run --project "$ROOT" decomp-goal decompilers --repo "$ROOT/examples/toy_match" --unit attempt.start.c --decompiler-dir "$DECOMPILER_DIR" --json >/dev/null
 uv run --project "$ROOT" decomp-goal gaps --repo "$ROOT/examples/toy_match" --state-dir "$STATE_DIR" --json >/dev/null
 uv run --project "$ROOT" decomp-goal monitor --repo "$ROOT/examples/toy_match" --unit attempt.start.c --state-dir "$STATE_DIR" --dashboard-out "$STATE_DIR/monitor.html" --max-ticks 1 --json >/dev/null
 test -s "$STATE_DIR/monitor.html"
-uv run --project "$ROOT" decomp-goal codex --repo "$ROOT/examples/toy_match" --unit attempt.c --mode exec --reasoning-effort high --json >/dev/null
+uv run --project "$ROOT" decomp-goal codex --repo "$ROOT/examples/toy_match" --unit attempt.c --mode exec --reasoning-effort high --prompt-file "$PROMPT_FILE" --leads-dir "$LEADS_DIR" --json >/dev/null
+test -s "$PROMPT_FILE"
 uv run --project "$ROOT" decomp-goal dashboard --repo "$ROOT/examples/toy_match" --state-dir "$STATE_DIR" --out "$STATE_DIR/dashboard.html" >/dev/null
 test -s "$STATE_DIR/dashboard.html"
 

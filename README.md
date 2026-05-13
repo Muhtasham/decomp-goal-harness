@@ -110,6 +110,7 @@ decomp-goal checkpoint --repo /path/to/project --commit
 ```
 
 `--commit` stages and commits the current dirty worktree only when the latest saved run record beats prior history. Use it after a fresh `decomp-goal run`, not as a substitute for the oracle.
+The checkpoint also verifies that the current worktree fingerprint matches the latest oracle record, so stale successful runs cannot authorize unrelated edits.
 
 Ask the harness whether the agent is stuck and what to do next:
 
@@ -181,6 +182,8 @@ decomp-goal monitor \
   --interval 300 \
   --max-ticks 999
 ```
+
+With `--json`, monitor emits one valid JSON array containing all ticks.
 
 Generate a local banteg-style progress dashboard:
 
