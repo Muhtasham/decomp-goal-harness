@@ -95,21 +95,28 @@ def render_command(command: str, unit: str | None) -> str:
     return command.replace("{unit}", shlex.quote(unit))
 
 
+def safe_slug(value: str | None, fallback: str = "item") -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]+", "-", value or fallback).strip("-") or fallback
+
+
 def strip_tags(value: str) -> str:
     without_tags = re.sub(r"<[^>]+>", " ", value)
     return re.sub(r"\s+", " ", html_lib.unescape(without_tags)).strip()
 
 
+def run_git(repo: Path, args: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(["git", *args], cwd=repo, text=True, capture_output=True, check=False)
+
+
+def git_status_short(repo: Path) -> str:
+    proc = run_git(repo, ["status", "--short"])
+    return proc.stdout.strip() if proc.returncode == 0 else ""
+
+
 def git_info(repo: Path) -> dict[str, str | None]:
     def git(args: list[str]) -> str | None:
         try:
-            proc = subprocess.run(
-                ["git", *args],
-                cwd=repo,
-                text=True,
-                capture_output=True,
-                check=False,
-            )
+            proc = run_git(repo, args)
         except FileNotFoundError:
             return None
         if proc.returncode != 0:
@@ -156,10 +163,14 @@ def default_prompt_path(repo: Path) -> Path:
 
 
 def default_experiments_path(repo: Path, unit: str | None) -> Path:
-    safe_unit = re.sub(r"[^A-Za-z0-9_.-]+", "-", unit or "target").strip("-") or "target"
+    safe_unit = safe_slug(unit, "target")
     return git_path(repo, f"decomp-goal/experiments/{safe_unit}.md") or (
         repo / ".decomp-goal" / "experiments" / f"{safe_unit}.md"
     ).resolve()
+
+
+def default_leads_dir(repo: Path) -> Path:
+    return git_path(repo, "decomp-goal/leads") or (repo / ".decomp-goal" / "leads").resolve()
 
 
 def inspect_repo(repo: Path) -> dict[str, Any]:
@@ -381,12 +392,67 @@ def list_dtk_targets(repo: Path, limit: int | None, query: str | None) -> list[d
     return targets
 
 
+def write_steering_lead(repo: Path, unit: str | None, source: str, text: str) -> Path:
+    leads_dir = default_leads_dir(repo)
+    leads_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    path = leads_dir / f"{stamp}-{safe_slug(source, 'lead')}.md"
+    body = f"""# Steering Lead
+
+Created: {datetime.now(timezone.utc).isoformat()}
+Source: {source}
+Unit: {unit or '-'}
+
+{text.strip()}
+"""
+    path.write_text(body, encoding="utf-8")
+    return path
+
+
+def load_steering_leads(repo: Path, limit: int = 5) -> list[dict[str, str]]:
+    leads_dir = default_leads_dir(repo)
+    if not leads_dir.exists():
+        return []
+    leads = []
+    for path in sorted(leads_dir.glob("*.md"), reverse=True)[:limit]:
+        text = path.read_text(encoding="utf-8", errors="replace")
+        source_match = re.search(r"^Source:\s*(?P<source>.+)$", text, re.M)
+        unit_match = re.search(r"^Unit:\s*(?P<unit>.+)$", text, re.M)
+        created_match = re.search(r"^Created:\s*(?P<created>.+)$", text, re.M)
+        body_match = re.search(r"^Unit:.*?\n\n(?P<body>.*)\Z", text, re.S | re.M)
+        note = body_match.group("body").strip() if body_match else text.strip()
+        leads.append(
+            {
+                "path": str(path),
+                "source": source_match.group("source").strip() if source_match else "unknown",
+                "unit": unit_match.group("unit").strip() if unit_match else "-",
+                "created_at": created_match.group("created").strip() if created_match else "",
+                "text": note,
+            }
+        )
+    return leads
+
+
+def render_recent_leads(repo: Path, limit: int = 3) -> str:
+    leads = load_steering_leads(repo, limit)
+    if not leads:
+        return ""
+    blocks = []
+    for lead in leads:
+        lead_text = lead["text"]
+        if len(lead_text) > 1600:
+            lead_text = lead_text[:1600].rstrip() + "\n..."
+        blocks.append(f"- Source: {lead['source']} | Unit: {lead['unit']}\n{lead_text}")
+    return "\n\nRecent steering leads:\n" + "\n\n".join(blocks) + "\n"
+
+
 def render_goal(repo: Path, unit: str | None, name: str | None, issue: str | None) -> str:
     config = load_config(repo)
     adapter = detect_adapter(repo, config)
     project_name = name or config.get("project", {}).get("name") or repo.name
     unit = unit or config.get("project", {}).get("default_unit") or "<target source file>"
     issue_text = f"\nUpstream issue/context: {issue}" if issue else ""
+    recent_leads = render_recent_leads(repo)
     if adapter == "dtk":
         validation = "Run `python3 configure.py`, `ninja`, then inspect objdiff/progress for the target TU."
     else:
@@ -407,6 +473,7 @@ Last-mile protocol:
 - Generate a short experiment queue, run one hypothesis at a time, and revert variants that do not improve the oracle.
 - Prefer evidence-bearing leads: nearby matched code, debug maps, decompiler agreement/disagreement, objdiff relocation/string deltas, and exact changed instruction classes.
 - If three consecutive runs do not improve, write down the blocker before continuing.
+{recent_leads}
 
 Validation:
 - {validation}
@@ -663,6 +730,196 @@ def print_history(records: list[dict[str, Any]]) -> None:
         head = (record.get("git") or {}).get("head") or "-"
         blocker = record.get("blocker") or "-"
         print(f"{record.get('created_at')} {head} matched={record.get('matched')} code={code_text} fuzzy={fuzzy_text} blocker={blocker}")
+
+
+def best_metric(records: list[dict[str, Any]], key: str) -> float | int | None:
+    values = []
+    for record in records:
+        metrics = record.get("_metrics") or {}
+        value = metrics.get(key)
+        if isinstance(value, (int, float)):
+            values.append(value)
+    return max(values) if values else None
+
+
+def build_checkpoint_report(repo: Path, records: list[dict[str, Any]]) -> dict[str, Any]:
+    dirty = bool(git_status_short(repo))
+    if not records:
+        return {
+            "status": "no_history",
+            "dirty": dirty,
+            "commit_allowed": False,
+            "improvements": [],
+            "recommended_message": None,
+            "advice": ["Run `decomp-goal run` first so the checkpoint has an oracle result."],
+        }
+
+    latest = records[-1]
+    previous = records[:-1]
+    latest_metrics = latest.get("_metrics") or {}
+    improvements = []
+
+    if latest.get("blocker"):
+        return {
+            "status": "blocked",
+            "dirty": dirty,
+            "commit_allowed": False,
+            "improvements": [],
+            "recommended_message": None,
+            "advice": [f"Do not commit this checkpoint yet; latest run is blocked by {latest['blocker']}."],
+        }
+
+    if latest.get("matched") is True and not any(record.get("matched") is True for record in previous):
+        improvements.append({"metric": "matched", "before": False, "after": True})
+
+    for key, label in [
+        ("exact_functions", "exact functions"),
+        ("matched_code", "matched code bytes"),
+        ("matched_code_percent", "matched code percent"),
+        ("fuzzy_percent", "fuzzy percent"),
+    ]:
+        after = latest_metrics.get(key)
+        before = best_metric(previous, key)
+        if isinstance(after, (int, float)) and (before is None or after > before):
+            improvements.append({"metric": label, "before": before, "after": after})
+
+    status = "improved" if improvements else "no_improvement"
+    if latest.get("matched") is True:
+        status = "matched"
+    unit = latest.get("unit") or "target"
+    recommended_message = f"decomp: {'match' if status == 'matched' else 'improve'} {unit}"
+    commit_allowed = dirty and bool(improvements)
+    advice = []
+    if improvements and dirty:
+        advice.append("Commit is allowed: latest oracle record improves over prior history and the worktree is dirty.")
+    elif improvements:
+        advice.append("Improvement detected, but the worktree is clean. It may already have been committed.")
+    else:
+        advice.append("No measurable improvement over prior run history. Revert or keep experimenting; do not commit as progress.")
+    return {
+        "status": status,
+        "dirty": dirty,
+        "commit_allowed": commit_allowed,
+        "improvements": improvements,
+        "recommended_message": recommended_message,
+        "latest_record": latest.get("_path"),
+        "advice": advice,
+    }
+
+
+def print_checkpoint_report(report: dict[str, Any]) -> None:
+    print(f"status: {report['status']}")
+    print(f"dirty: {report['dirty']}")
+    print(f"commit_allowed: {report['commit_allowed']}")
+    if report.get("recommended_message"):
+        print(f"recommended_message: {report['recommended_message']}")
+    if report.get("improvements"):
+        print("improvements:")
+        for item in report["improvements"]:
+            print(f"- {item['metric']}: {item['before']} -> {item['after']}")
+    print("advice:")
+    for item in report["advice"]:
+        print(f"- {item}")
+
+
+def commit_checkpoint(repo: Path, message: str) -> dict[str, Any]:
+    add = run_git(repo, ["add", "-A"])
+    if add.returncode != 0:
+        raise SystemExit(add.stderr.strip() or add.stdout.strip() or "git add failed")
+    commit = run_git(repo, ["commit", "-m", message])
+    if commit.returncode != 0:
+        raise SystemExit(commit.stderr.strip() or commit.stdout.strip() or "git commit failed")
+    return {"stdout": commit.stdout.strip(), "stderr": commit.stderr.strip()}
+
+
+def build_gap_report(repo: Path, state_dir: Path) -> dict[str, Any]:
+    config = load_config(repo)
+    adapter = detect_adapter(repo, config)
+    info = inspect_repo(repo)
+    records = load_history(state_dir)
+    leads = load_steering_leads(repo, 3)
+    commands = config.get("commands", {})
+    gaps = [
+        {
+            "area": "oracle loop",
+            "status": "covered",
+            "why": "The harness can run configure/build/score and persist JSON run records.",
+            "next": "Keep project-specific score commands honest and cheap enough for repeated agent use.",
+        },
+        {
+            "area": "improvement commits",
+            "status": "covered",
+            "why": "`checkpoint` gates commits on measurable oracle improvement, matching the banteg vertical-rule workflow.",
+            "next": "Use `decomp-goal checkpoint --commit` only after a successful run record.",
+        },
+        {
+            "area": "external steering leads",
+            "status": "covered" if leads else "ready",
+            "why": "`steer` stores human, Ghidra, IDA, Binja, or GPT-Pro leads under Git metadata and injects recent leads into generated goal prompts.",
+            "next": "When three variants fail, record the best external lead with `decomp-goal steer --source ida --text ...`.",
+        },
+        {
+            "area": "model/reasoning runs",
+            "status": "covered",
+            "why": "`codex` can pin the model and reasoning effort for high vs xhigh style passes.",
+            "next": "Use xhigh for last-mile plateaus and keep high/medium for cheaper exploratory runs.",
+        },
+        {
+            "area": "diff intelligence",
+            "status": "partial" if commands.get("diff") else "open",
+            "why": "`lead` classifies text diffs, but it does not yet parse objdiff JSON or asm-differ structure directly.",
+            "next": "Add native objdiff/asm-differ import so the first differing instruction, reloc, and function name are machine-readable.",
+        },
+        {
+            "area": "variant search",
+            "status": "partial",
+            "why": "`experiments` creates a bounded queue, but the harness does not yet generate or batch-test source variants.",
+            "next": "Add a variant runner that applies one patch at a time, runs the oracle, records metrics, then auto-reverts losers.",
+        },
+        {
+            "area": "target ranking",
+            "status": "partial" if adapter == "dtk" else "open",
+            "why": "`targets` lists candidate nonmatching objects, but does not rank by size, dependency risk, or recent progress.",
+            "next": "Rank targets by small function count, available decompiler output, issue labels, and low shared-header blast radius.",
+        },
+        {
+            "area": "long-run supervision",
+            "status": "partial",
+            "why": "`codex --mode tmux` launches a long run and `coach` detects plateaus, but no supervisor wakes up to inject leads or restart a stuck runner.",
+            "next": "Add a monitor command that periodically runs coach/dashboard, summarizes status, and emits a steering prompt when plateaued.",
+        },
+        {
+            "area": "multi-decompiler ingestion",
+            "status": "open",
+            "why": "The harness can store decompiler leads as text, but cannot normalize RootCubed Ghidra, IDA, and Binja output into comparable hypotheses.",
+            "next": "Define a lead schema: function, pseudocode shape, suspicious type/layout claims, and disagreements between decompilers.",
+        },
+        {
+            "area": "original input boundary",
+            "status": "external" if adapter == "dtk" and not info.get("dtk", {}).get("has_original_input") else "covered",
+            "why": "Commercial original game input is intentionally not fetched or generated by the harness.",
+            "next": "User must provide legal original inputs before real ZeldaRET build/diff loops can run locally.",
+        },
+    ]
+    return {
+        "repo": str(repo),
+        "adapter": adapter,
+        "runs": len(records),
+        "recent_leads": len(leads),
+        "gaps": gaps,
+    }
+
+
+def print_gap_report(report: dict[str, Any]) -> None:
+    print(f"repo: {report['repo']}")
+    print(f"adapter: {report['adapter']}")
+    print(f"runs: {report['runs']}")
+    print(f"recent_leads: {report['recent_leads']}")
+    print("gaps:")
+    for item in report["gaps"]:
+        print(f"- {item['area']} [{item['status']}]")
+        print(f"  why: {item['why']}")
+        print(f"  next: {item['next']}")
 
 
 def generate_dashboard(records: list[dict[str, Any]], title: str) -> str:
@@ -1123,6 +1380,7 @@ def render_codex_runner(
     mode: str,
     session: str,
     model: str,
+    reasoning_effort: str | None,
     sandbox: str,
     approval: str,
 ) -> dict[str, str]:
@@ -1137,11 +1395,17 @@ def render_codex_runner(
         str(repo),
         "--model",
         model,
-        "--sandbox",
-        sandbox,
-        "--ask-for-approval",
-        approval,
     ]
+    if reasoning_effort:
+        codex_parts.extend(["--config", f"model_reasoning_effort={json.dumps(reasoning_effort)}"])
+    codex_parts.extend(
+        [
+            "--sandbox",
+            sandbox,
+            "--ask-for-approval",
+            approval,
+        ]
+    )
     if mode == "exec":
         codex_parts.insert(1, "exec")
     else:
@@ -1238,6 +1502,13 @@ def main(argv: list[str] | None = None) -> int:
     history_p.add_argument("--state-dir", type=Path)
     history_p.add_argument("--json", action="store_true")
 
+    checkpoint_p = sub.add_parser("checkpoint", help="Gate a progress commit on the latest oracle record")
+    checkpoint_p.add_argument("--repo", type=repo_path, default=Path.cwd())
+    checkpoint_p.add_argument("--state-dir", type=Path)
+    checkpoint_p.add_argument("--commit", action="store_true")
+    checkpoint_p.add_argument("--message")
+    checkpoint_p.add_argument("--json", action="store_true")
+
     coach_p = sub.add_parser("coach", help="Summarize progress and suggest the next last-mile action")
     coach_p.add_argument("--repo", type=repo_path, default=Path.cwd())
     coach_p.add_argument("--state-dir", type=Path)
@@ -1258,6 +1529,20 @@ def main(argv: list[str] | None = None) -> int:
     experiments_p.add_argument("--out", type=Path)
     experiments_p.add_argument("--json", action="store_true")
 
+    steer_p = sub.add_parser("steer", help="Record or list external steering leads for the next goal prompt")
+    steer_p.add_argument("--repo", type=repo_path, default=Path.cwd())
+    steer_p.add_argument("--unit")
+    steer_p.add_argument("--source", default="human", help="human, ghidra, ida, binja, gpt-pro, objdiff, etc.")
+    steer_p.add_argument("--text")
+    steer_p.add_argument("--file", type=Path)
+    steer_p.add_argument("--limit", type=int, default=5)
+    steer_p.add_argument("--json", action="store_true")
+
+    gaps_p = sub.add_parser("gaps", help="Audit missing pieces against a banteg-style decomp goal loop")
+    gaps_p.add_argument("--repo", type=repo_path, default=Path.cwd())
+    gaps_p.add_argument("--state-dir", type=Path)
+    gaps_p.add_argument("--json", action="store_true")
+
     dashboard_p = sub.add_parser("dashboard", help="Generate a local HTML progress dashboard")
     dashboard_p.add_argument("--repo", type=repo_path, default=Path.cwd())
     dashboard_p.add_argument("--state-dir", type=Path)
@@ -1272,6 +1557,7 @@ def main(argv: list[str] | None = None) -> int:
     codex_p.add_argument("--mode", choices=["exec", "tmux"], default="tmux")
     codex_p.add_argument("--session", default="decomp-goal")
     codex_p.add_argument("--model", default="gpt-5.5")
+    codex_p.add_argument("--reasoning-effort", choices=["low", "medium", "high", "xhigh"])
     codex_p.add_argument("--sandbox", default="workspace-write")
     codex_p.add_argument("--approval", default="on-request")
     codex_p.add_argument("--launch", action="store_true")
@@ -1329,6 +1615,25 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print_history(records)
         return 0
+    if args.command == "checkpoint":
+        state_dir = (args.state_dir.resolve() if args.state_dir else default_state_dir(args.repo))
+        report = build_checkpoint_report(args.repo, load_history(state_dir))
+        if args.commit:
+            if not report["commit_allowed"]:
+                if args.json:
+                    print(json.dumps(report, indent=2))
+                else:
+                    print_checkpoint_report(report)
+                return 1
+            message = args.message or report["recommended_message"]
+            report["commit"] = commit_checkpoint(args.repo, message)
+        if args.json:
+            print(json.dumps(report, indent=2))
+        else:
+            print_checkpoint_report(report)
+            if report.get("commit"):
+                print(report["commit"]["stdout"])
+        return 0
     if args.command == "coach":
         state_dir = (args.state_dir.resolve() if args.state_dir else default_state_dir(args.repo))
         report = coach_history(load_history(state_dir), args.min_runs, args.plateau_runs)
@@ -1355,6 +1660,35 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print(out)
         return 0
+    if args.command == "steer":
+        parts = []
+        if args.file:
+            parts.append(args.file.read_text(encoding="utf-8"))
+        if args.text:
+            parts.append(args.text)
+        if parts:
+            path = write_steering_lead(args.repo, args.unit, args.source, "\n\n".join(parts))
+            result = {"path": str(path)}
+            if args.json:
+                print(json.dumps(result, indent=2))
+            else:
+                print(path)
+            return 0
+        leads = load_steering_leads(args.repo, args.limit)
+        if args.json:
+            print(json.dumps(leads, indent=2))
+        else:
+            for lead in leads:
+                print(f"{lead['created_at']} {lead['source']} {lead['unit']} {lead['path']}")
+        return 0
+    if args.command == "gaps":
+        state_dir = (args.state_dir.resolve() if args.state_dir else default_state_dir(args.repo))
+        report = build_gap_report(args.repo, state_dir)
+        if args.json:
+            print(json.dumps(report, indent=2))
+        else:
+            print_gap_report(report)
+        return 0
     if args.command == "dashboard":
         state_dir = (args.state_dir.resolve() if args.state_dir else default_state_dir(args.repo))
         out = (args.out.resolve() if args.out else default_dashboard_path(args.repo))
@@ -1372,6 +1706,7 @@ def main(argv: list[str] | None = None) -> int:
             args.mode,
             args.session,
             args.model,
+            args.reasoning_effort,
             args.sandbox,
             args.approval,
         )

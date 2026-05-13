@@ -83,6 +83,15 @@ View the run history:
 decomp-goal history --repo /path/to/project
 ```
 
+Gate a progress commit on the latest oracle record:
+
+```bash
+decomp-goal checkpoint --repo /path/to/project
+decomp-goal checkpoint --repo /path/to/project --commit
+```
+
+`--commit` stages and commits the current dirty worktree only when the latest saved run record beats prior history. Use it after a fresh `decomp-goal run`, not as a substitute for the oracle.
+
 Ask the harness whether the agent is stuck and what to do next:
 
 ```bash
@@ -101,6 +110,22 @@ Write a bounded last-mile experiment queue:
 decomp-goal experiments --repo /path/to/project --unit src/d/actor/d_a_obj_mmrr.cpp
 ```
 
+Record an external steering lead from a human, Ghidra, IDA, Binja, GPT-Pro, or objdiff:
+
+```bash
+decomp-goal steer \
+  --repo /path/to/project \
+  --unit src/d/actor/d_a_obj_mmrr.cpp \
+  --source ida \
+  --text "Decompiler agrees on the if/else shape; remaining delta looks like temp lifetime before the call."
+```
+
+Audit current workflow gaps against the banteg-style loop:
+
+```bash
+decomp-goal gaps --repo /path/to/project
+```
+
 Generate a local banteg-style progress dashboard:
 
 ```bash
@@ -117,6 +142,7 @@ decomp-goal codex \
   --unit src/d/actor/d_a_obj_mmrr.cpp \
   --name "Mirror object" \
   --issue https://github.com/zeldaret/tww/issues/423 \
+  --reasoning-effort xhigh \
   --mode tmux \
   --session tww-mmrr
 ```
@@ -204,6 +230,8 @@ uv run decomp-goal codex --repo /path/to/tww --unit src/d/actor/d_a_obj_mmrr.cpp
 
 The tmux path is closer to the banteg workflow: let the agent run, inspect the dashboard/history, and inject steering when it gets stuck after a near-match or layout cascade. The generated prompt is written under the repo's Git metadata path so it can be reviewed or reused without creating untracked files.
 
+Use `--reasoning-effort high` for normal deep runs and `--reasoning-effort xhigh` for last-mile plateaus where stronger hypotheses matter more than cost/latency.
+
 ## Banteg-inspired loop
 
 The harness is designed around the workflow shown in banteg's Wind Waker `d_a_pz` run:
@@ -212,6 +240,7 @@ The harness is designed around the workflow shown in banteg's Wind Waker `d_a_pz
 - no fakematching or forbidden decomp tricks,
 - compile/diff/score after each meaningful edit,
 - commit only exact improvements, fuzzy improvements, or structural layout unblocks,
+- inject external leads when the agent is stuck: human notes, GPT-Pro notes, Ghidra, IDA, Binja, objdiff, debug maps,
 - treat sudden exact-function jumps as possible layout cascades until proven,
 - record the remaining mismatch class when stuck: string pool, relocation, branch shape, regalloc, weak/template ordering, inline, missing type, or missing original input.
 
@@ -224,8 +253,12 @@ The painful part starts when a TU is nearly correct but one or two functions sti
 1. `decomp-goal lead` classifies the diff into mismatch classes such as string pool, branch shape, regalloc, relocation/call target, stack frame, constant/type, or unknown.
 2. `decomp-goal experiments` writes a checklist for one-hypothesis-at-a-time variants under the repo's Git metadata path.
 3. `decomp-goal coach` watches run history for high-score plateaus and tells the agent to stop broad rewrites when it is stuck.
+4. `decomp-goal steer` stores external leads and injects the latest ones into the next generated `/goal` prompt.
+5. `decomp-goal checkpoint` makes "commit every improvement" mechanical: it compares the latest run against prior history and only allows a commit when the oracle improved.
 
 That does not eliminate the hard part, but it keeps the agent from random-walking after 99%. The expected behavior is: classify first, try bounded variants, revert failures, preserve only oracle improvements, and ask for a human/decompiler/debug-map lead when the same mismatch class survives several variants.
+
+The remaining gaps are visible with `decomp-goal gaps`. The big ones are native objdiff/asm-differ parsing, multi-decompiler lead normalization, and a variant runner that can apply/revert hundreds of source-level hypotheses while keeping only oracle improvements.
 
 ## Credits
 

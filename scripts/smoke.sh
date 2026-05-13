@@ -20,10 +20,15 @@ if uv run --project "$ROOT" decomp-goal run --repo "$ROOT/examples/toy_match" --
 fi
 
 uv run --project "$ROOT" decomp-goal history --repo "$ROOT/examples/toy_match" --state-dir "$STATE_DIR" --json >/dev/null
+uv run --project "$ROOT" decomp-goal checkpoint --repo "$ROOT/examples/toy_match" --state-dir "$STATE_DIR" --json >/dev/null
 uv run --project "$ROOT" decomp-goal coach --repo "$ROOT/examples/toy_match" --state-dir "$STATE_DIR" --json >/dev/null
 uv run --project "$ROOT" decomp-goal lead --repo "$ROOT/examples/toy_match" --unit attempt.start.c --json >/dev/null
 uv run --project "$ROOT" decomp-goal experiments --repo "$ROOT/examples/toy_match" --unit attempt.start.c --out "$STATE_DIR/experiments.md" --json >/dev/null
 test -s "$STATE_DIR/experiments.md"
+uv run --project "$ROOT" decomp-goal steer --repo "$ROOT/examples/toy_match" --unit attempt.start.c --source smoke --text "branch condition lead" --json >/dev/null
+uv run --project "$ROOT" decomp-goal steer --repo "$ROOT/examples/toy_match" --json >/dev/null
+uv run --project "$ROOT" decomp-goal gaps --repo "$ROOT/examples/toy_match" --state-dir "$STATE_DIR" --json >/dev/null
+uv run --project "$ROOT" decomp-goal codex --repo "$ROOT/examples/toy_match" --unit attempt.c --mode exec --reasoning-effort high --json >/dev/null
 uv run --project "$ROOT" decomp-goal dashboard --repo "$ROOT/examples/toy_match" --state-dir "$STATE_DIR" --out "$STATE_DIR/dashboard.html" >/dev/null
 test -s "$STATE_DIR/dashboard.html"
 
