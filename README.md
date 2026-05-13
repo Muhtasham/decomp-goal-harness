@@ -51,6 +51,7 @@ List candidate nonmatching targets in a DTK/ZeldaRET-style project:
 
 ```bash
 decomp-goal targets --repo /path/to/tww --limit 20
+decomp-goal targets --repo /path/to/tww --rank --limit 20
 ```
 
 Filter for one module:
@@ -102,6 +103,7 @@ Classify the current diff and generate next leads:
 
 ```bash
 decomp-goal lead --repo /path/to/project --unit attempt.start.c
+decomp-goal lead --repo /path/to/project --unit attempt.start.c --diff-json objdiff-export.json --diff-format objdiff
 ```
 
 Write a bounded last-mile experiment queue:
@@ -109,6 +111,17 @@ Write a bounded last-mile experiment queue:
 ```bash
 decomp-goal experiments --repo /path/to/project --unit src/d/actor/d_a_obj_mmrr.cpp
 ```
+
+Batch-test source patch variants and revert losers:
+
+```bash
+decomp-goal variants \
+  --repo /path/to/project \
+  --unit src/d/actor/d_a_obj_mmrr.cpp \
+  --patch-dir .git/decomp-goal/variants
+```
+
+Use `--keep-best` only when you want the best improving patch left applied after the batch.
 
 Record an external steering lead from a human, Ghidra, IDA, Binja, GPT-Pro, or objdiff:
 
@@ -120,10 +133,35 @@ decomp-goal steer \
   --text "Decompiler agrees on the if/else shape; remaining delta looks like temp lifetime before the call."
 ```
 
+Record structured decompiler output and compare agreement across tools:
+
+```bash
+decomp-goal decompilers \
+  --repo /path/to/project \
+  --unit src/d/actor/d_a_obj_mmrr.cpp \
+  --function create__6daPz_cFv \
+  --source ghidra \
+  --file ghidra-create.c \
+  --notes "IDA and Binja agree on branch shape; remaining delta smells like stack temp lifetime."
+
+decomp-goal decompilers --repo /path/to/project --unit src/d/actor/d_a_obj_mmrr.cpp
+```
+
 Audit current workflow gaps against the banteg-style loop:
 
 ```bash
 decomp-goal gaps --repo /path/to/project
+```
+
+Run a lightweight monitor beside a long tmux/Codex session:
+
+```bash
+decomp-goal monitor \
+  --repo /path/to/project \
+  --unit src/d/actor/d_a_obj_mmrr.cpp \
+  --dashboard-out .git/decomp-goal/dashboard.html \
+  --interval 300 \
+  --max-ticks 999
 ```
 
 Generate a local banteg-style progress dashboard:
@@ -251,14 +289,17 @@ The harness is intentionally an oracle wrapper, not an autonomous source mutator
 The painful part starts when a TU is nearly correct but one or two functions still refuse to match. The harness tries to reduce that by forcing a more mechanical loop:
 
 1. `decomp-goal lead` classifies the diff into mismatch classes such as string pool, branch shape, regalloc, relocation/call target, stack frame, constant/type, or unknown.
-2. `decomp-goal experiments` writes a checklist for one-hypothesis-at-a-time variants under the repo's Git metadata path.
-3. `decomp-goal coach` watches run history for high-score plateaus and tells the agent to stop broad rewrites when it is stuck.
-4. `decomp-goal steer` stores external leads and injects the latest ones into the next generated `/goal` prompt.
-5. `decomp-goal checkpoint` makes "commit every improvement" mechanical: it compares the latest run against prior history and only allows a commit when the oracle improved.
+2. `decomp-goal lead --diff-json` ingests structured objdiff/asm-differ-style JSON when a project can export it.
+3. `decomp-goal experiments` writes a checklist for one-hypothesis-at-a-time variants under the repo's Git metadata path.
+4. `decomp-goal variants` applies patch files one at a time, runs the oracle, records metrics, and reverts non-kept variants.
+5. `decomp-goal coach` watches run history for high-score plateaus and tells the agent to stop broad rewrites when it is stuck.
+6. `decomp-goal monitor` runs that coaching loop periodically during tmux sessions and writes a steering prompt when intervention is needed.
+7. `decomp-goal steer` and `decomp-goal decompilers` store external leads and inject the latest ones into the next generated `/goal` prompt.
+8. `decomp-goal checkpoint` makes "commit every improvement" mechanical: it compares the latest run against prior history and only allows a commit when the oracle improved.
 
 That does not eliminate the hard part, but it keeps the agent from random-walking after 99%. The expected behavior is: classify first, try bounded variants, revert failures, preserve only oracle improvements, and ask for a human/decompiler/debug-map lead when the same mismatch class survives several variants.
 
-The remaining gaps are visible with `decomp-goal gaps`. The big ones are native objdiff/asm-differ parsing, multi-decompiler lead normalization, and a variant runner that can apply/revert hundreds of source-level hypotheses while keeping only oracle improvements.
+The remaining non-code boundary is original game input. The harness intentionally reports `missing_original_input`; it does not fetch, generate, or bypass copyrighted game material.
 
 ## Credits
 

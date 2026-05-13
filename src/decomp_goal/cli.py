@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import html as html_lib
 import json
 import re
@@ -171,6 +172,14 @@ def default_experiments_path(repo: Path, unit: str | None) -> Path:
 
 def default_leads_dir(repo: Path) -> Path:
     return git_path(repo, "decomp-goal/leads") or (repo / ".decomp-goal" / "leads").resolve()
+
+
+def default_decompiler_dir(repo: Path) -> Path:
+    return git_path(repo, "decomp-goal/decompilers") or (repo / ".decomp-goal" / "decompilers").resolve()
+
+
+def default_monitor_path(repo: Path) -> Path:
+    return git_path(repo, "decomp-goal/monitor.md") or (repo / ".decomp-goal" / "monitor.md").resolve()
 
 
 def inspect_repo(repo: Path) -> dict[str, Any]:
@@ -345,21 +354,28 @@ def list_github_issues(
     return filtered
 
 
-def list_targets(repo: Path, limit: int | None = None, query: str | None = None) -> list[dict[str, str]]:
+def list_targets(repo: Path, limit: int | None = None, query: str | None = None, ranked: bool = False) -> list[dict[str, Any]]:
     config = load_config(repo)
     adapter = detect_adapter(repo, config)
     if adapter == "dtk":
-        return list_dtk_targets(repo, limit, query)
+        targets = list_dtk_targets(repo, None if ranked else limit, query)
+        if ranked:
+            targets = rank_targets(repo, targets)
+            if limit:
+                targets = targets[:limit]
+        return targets
     default_unit = config.get("project", {}).get("default_unit")
     if default_unit:
-        targets = [{"status": "Configured", "path": str(default_unit)}]
+        targets: list[dict[str, Any]] = [{"status": "Configured", "path": str(default_unit), "kind": "configured"}]
         if query:
             targets = [target for target in targets if query in target["path"]]
+        if ranked:
+            targets = rank_targets(repo, targets)
         return targets
     return []
 
 
-def list_dtk_targets(repo: Path, limit: int | None, query: str | None) -> list[dict[str, str]]:
+def list_dtk_targets(repo: Path, limit: int | None, query: str | None) -> list[dict[str, Any]]:
     configure = repo / "configure.py"
     if not configure.exists():
         return []
@@ -390,6 +406,58 @@ def list_dtk_targets(repo: Path, limit: int | None, query: str | None) -> list[d
         if limit and len(targets) >= limit:
             break
     return targets
+
+
+def source_path_for_target(repo: Path, target_path: str) -> Path:
+    candidates = [
+        repo / target_path,
+        repo / "src" / target_path,
+    ]
+    if target_path.startswith("d/"):
+        candidates.append(repo / "src" / target_path)
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[-1]
+
+
+def rank_targets(repo: Path, targets: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    ranked = []
+    for target in targets:
+        ranked_target = dict(target)
+        path = str(target.get("path") or "")
+        source = source_path_for_target(repo, path)
+        score = 100
+        reasons = []
+        if source.exists():
+            text = source.read_text(encoding="utf-8", errors="replace")
+            lines = text.splitlines()
+            line_count = len(lines)
+            nonmatching_count = len(re.findall(r"\b(NON_MATCHING|NonMatching|asm|GLOBAL_ASM)\b", text))
+            includes = len(re.findall(r"^\s*#\s*include\b", text, re.M))
+            score = min(80, line_count // 8) + nonmatching_count * 12 + includes
+            ranked_target["source"] = str(source)
+            ranked_target["lines"] = line_count
+            ranked_target["nonmatching_markers"] = nonmatching_count
+            reasons.append(f"{line_count} source lines")
+            if nonmatching_count:
+                reasons.append(f"{nonmatching_count} nonmatching markers")
+        else:
+            score += 40
+            reasons.append("source file not found")
+        if target.get("kind") == "actor_rel":
+            score += 8
+            reasons.append("actor rel target")
+        if any(part in path for part in ["include/", "JSystem", "dolphin", "framework", "m_Do_"]):
+            score += 35
+            reasons.append("shared subsystem path")
+        if path.endswith((".c", ".cpp")):
+            score -= 5
+        ranked_target["rank_score"] = max(0, score)
+        ranked_target["rank_reasons"] = reasons
+        ranked.append(ranked_target)
+    ranked.sort(key=lambda item: (item.get("rank_score", 9999), item.get("path", "")))
+    return ranked
 
 
 def write_steering_lead(repo: Path, unit: str | None, source: str, text: str) -> Path:
@@ -446,6 +514,110 @@ def render_recent_leads(repo: Path, limit: int = 3) -> str:
     return "\n\nRecent steering leads:\n" + "\n\n".join(blocks) + "\n"
 
 
+def write_decompiler_record(
+    repo: Path,
+    unit: str | None,
+    source: str,
+    function: str | None,
+    pseudocode: str,
+    notes: str | None,
+    confidence: str | None,
+) -> Path:
+    root = default_decompiler_dir(repo)
+    root.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    name = f"{stamp}-{safe_slug(source, 'decompiler')}-{safe_slug(function or unit, 'function')}.json"
+    path = root / name
+    payload = {
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "unit": unit,
+        "source": source,
+        "function": function,
+        "confidence": confidence,
+        "pseudocode": pseudocode.strip(),
+        "notes": (notes or "").strip(),
+    }
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    write_steering_lead(
+        repo,
+        unit,
+        source,
+        f"Decompiler lead for `{function or unit or '-'}`.\n\n{payload['notes']}\n\n{payload['pseudocode']}".strip(),
+    )
+    return path
+
+
+def load_decompiler_records(repo: Path, unit: str | None = None, function: str | None = None) -> list[dict[str, Any]]:
+    root = default_decompiler_dir(repo)
+    if not root.exists():
+        return []
+    records = []
+    for path in sorted(root.glob("*.json")):
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            continue
+        if unit and record.get("unit") != unit:
+            continue
+        if function and record.get("function") != function:
+            continue
+        record["_path"] = str(path)
+        records.append(record)
+    records.sort(key=lambda item: item.get("created_at", ""))
+    return records
+
+
+def normalize_pseudocode(value: str) -> str:
+    lines = []
+    for line in value.splitlines():
+        stripped = re.sub(r"//.*", "", line).strip()
+        if stripped:
+            lines.append(re.sub(r"\s+", " ", stripped))
+    return "\n".join(lines)
+
+
+def build_decompiler_report(repo: Path, unit: str | None, function: str | None) -> dict[str, Any]:
+    records = load_decompiler_records(repo, unit, function)
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for record in records:
+        key = record.get("function") or record.get("unit") or "unknown"
+        groups.setdefault(key, []).append(record)
+    functions = []
+    for name, items in sorted(groups.items()):
+        normalized = {normalize_pseudocode(item.get("pseudocode", "")) for item in items}
+        sources = sorted({str(item.get("source") or "unknown") for item in items})
+        notes = " ".join(str(item.get("notes") or "") for item in items).lower()
+        suspected = []
+        for token in ["type", "layout", "inline", "branch", "string", "register", "stack", "reloc", "temp"]:
+            if token in notes:
+                suspected.append(token)
+        functions.append(
+            {
+                "function": name,
+                "sources": sources,
+                "records": len(items),
+                "agree": len(normalized) <= 1,
+                "suspected_mismatch_classes": suspected,
+                "latest": items[-1].get("_path"),
+            }
+        )
+    return {
+        "repo": str(repo),
+        "unit": unit,
+        "function": function,
+        "records": len(records),
+        "functions": functions,
+    }
+
+
+def print_decompiler_report(report: dict[str, Any]) -> None:
+    print(f"records: {report['records']}")
+    for item in report["functions"]:
+        agree = "agree" if item["agree"] else "disagree"
+        classes = ", ".join(item["suspected_mismatch_classes"]) or "-"
+        print(f"- {item['function']}: {agree}; sources={','.join(item['sources'])}; classes={classes}")
+
+
 def render_goal(repo: Path, unit: str | None, name: str | None, issue: str | None) -> str:
     config = load_config(repo)
     adapter = detect_adapter(repo, config)
@@ -481,18 +653,21 @@ Validation:
 
 
 def run_harness(repo: Path, unit: str | None, state_dir: Path, json_output: bool) -> int:
-    config = load_config(repo)
-    adapter = detect_adapter(repo, config)
-    if adapter == "dtk":
-        result = run_dtk(repo, unit)
-    else:
-        result = run_generic(repo, config, unit)
+    result = execute_harness(repo, unit)
     write_run_record(result, state_dir)
     if json_output:
         print(json.dumps(result, indent=2))
     else:
         print_human_run(result)
     return 0 if result.get("matched") is True else 1
+
+
+def execute_harness(repo: Path, unit: str | None) -> dict[str, Any]:
+    config = load_config(repo)
+    adapter = detect_adapter(repo, config)
+    if adapter == "dtk":
+        return run_dtk(repo, unit)
+    return run_generic(repo, config, unit)
 
 
 def run_generic(repo: Path, config: dict[str, Any], unit: str | None) -> dict[str, Any]:
@@ -832,6 +1007,124 @@ def commit_checkpoint(repo: Path, message: str) -> dict[str, Any]:
     return {"stdout": commit.stdout.strip(), "stderr": commit.stderr.strip()}
 
 
+def metric_tuple(record: dict[str, Any] | None) -> tuple[float, float, float, float]:
+    if not record:
+        return (-1.0, -1.0, -1.0, -1.0)
+    metrics = record.get("_metrics") or extract_metrics(record)
+    matched = 1.0 if record.get("matched") is True else 0.0
+    exact = float(metrics.get("exact_functions") or 0)
+    code = float(metrics.get("matched_code") or 0)
+    fuzzy = float(metrics.get("fuzzy_percent") or 0)
+    return (matched, exact, code, fuzzy)
+
+
+def best_record(records: list[dict[str, Any]]) -> dict[str, Any] | None:
+    return max(records, key=metric_tuple) if records else None
+
+
+def resolve_repo_path(repo: Path, path: Path) -> Path:
+    return path if path.is_absolute() else repo / path
+
+
+def collect_patch_paths(repo: Path, patch_dir: Path | None, patches: list[Path] | None) -> list[Path]:
+    found = []
+    if patch_dir:
+        resolved_dir = resolve_repo_path(repo, patch_dir)
+        found.extend(sorted(path for path in resolved_dir.iterdir() if path.suffix in {".patch", ".diff"}))
+    if patches:
+        found.extend(resolve_repo_path(repo, patch) for patch in patches)
+    unique = []
+    seen = set()
+    for path in found:
+        resolved = path.resolve()
+        if resolved not in seen:
+            seen.add(resolved)
+            unique.append(resolved)
+    return unique
+
+
+def git_apply(repo: Path, patch: Path, reverse: bool = False, check: bool = False) -> subprocess.CompletedProcess[str]:
+    args = ["apply"]
+    if reverse:
+        args.append("-R")
+    if check:
+        args.append("--check")
+    args.append(str(patch))
+    return run_git(repo, args)
+
+
+def run_variant_batch(
+    repo: Path,
+    unit: str | None,
+    state_dir: Path,
+    patch_paths: list[Path],
+    keep_best: bool,
+    allow_dirty: bool,
+) -> dict[str, Any]:
+    if not patch_paths:
+        raise SystemExit("no patch files provided")
+    initial_dirty = git_status_short(repo)
+    if initial_dirty and not allow_dirty:
+        raise SystemExit("worktree is dirty; commit/stash/revert before running variants, or pass --allow-dirty")
+
+    history_before = load_history(state_dir)
+    baseline = best_record(history_before)
+    best_variant = None
+    results = []
+    for patch in patch_paths:
+        patch_id = hashlib.sha256(patch.read_bytes()).hexdigest()[:12]
+        item: dict[str, Any] = {"patch": str(patch), "patch_id": patch_id, "applied": False}
+        check = git_apply(repo, patch, check=True)
+        if check.returncode != 0:
+            item["status"] = "apply_check_failed"
+            item["error"] = (check.stderr or check.stdout).strip()
+            results.append(item)
+            continue
+        apply = git_apply(repo, patch)
+        if apply.returncode != 0:
+            item["status"] = "apply_failed"
+            item["error"] = (apply.stderr or apply.stdout).strip()
+            results.append(item)
+            continue
+        item["applied"] = True
+        try:
+            result = execute_harness(repo, unit)
+            result["variant"] = {"patch": str(patch), "patch_id": patch_id}
+            write_run_record(result, state_dir)
+            item["status"] = "tested"
+            item["matched"] = result.get("matched")
+            item["blocker"] = result.get("blocker")
+            item["metrics"] = extract_metrics(result)
+            item["improved"] = metric_tuple(result) > metric_tuple(baseline)
+            if item["improved"] and (best_variant is None or metric_tuple(result) > metric_tuple(best_variant["record"])):
+                best_variant = {"patch": patch, "record": result, "summary": item}
+        finally:
+            revert = git_apply(repo, patch, reverse=True)
+            if revert.returncode != 0:
+                item["revert_error"] = (revert.stderr or revert.stdout).strip()
+                item["status"] = "revert_failed"
+                results.append(item)
+                raise SystemExit(f"failed to reverse patch {patch}: {item['revert_error']}")
+        results.append(item)
+
+    kept = None
+    if keep_best and best_variant:
+        apply = git_apply(repo, best_variant["patch"])
+        if apply.returncode != 0:
+            raise SystemExit((apply.stderr or apply.stdout).strip() or f"failed to apply best patch {best_variant['patch']}")
+        kept = str(best_variant["patch"])
+
+    return {
+        "repo": str(repo),
+        "unit": unit,
+        "baseline": metric_tuple(baseline),
+        "tested": len(results),
+        "best_patch": str(best_variant["patch"]) if best_variant else None,
+        "kept_patch": kept,
+        "results": results,
+    }
+
+
 def build_gap_report(repo: Path, state_dir: Path) -> dict[str, Any]:
     config = load_config(repo)
     adapter = detect_adapter(repo, config)
@@ -854,7 +1147,7 @@ def build_gap_report(repo: Path, state_dir: Path) -> dict[str, Any]:
         },
         {
             "area": "external steering leads",
-            "status": "covered" if leads else "ready",
+            "status": "covered",
             "why": "`steer` stores human, Ghidra, IDA, Binja, or GPT-Pro leads under Git metadata and injects recent leads into generated goal prompts.",
             "next": "When three variants fail, record the best external lead with `decomp-goal steer --source ida --text ...`.",
         },
@@ -866,33 +1159,33 @@ def build_gap_report(repo: Path, state_dir: Path) -> dict[str, Any]:
         },
         {
             "area": "diff intelligence",
-            "status": "partial" if commands.get("diff") else "open",
-            "why": "`lead` classifies text diffs, but it does not yet parse objdiff JSON or asm-differ structure directly.",
-            "next": "Add native objdiff/asm-differ import so the first differing instruction, reloc, and function name are machine-readable.",
+            "status": "covered",
+            "why": "`lead` classifies text diffs and can ingest structured objdiff/asm-differ-style JSON with `--diff-json`.",
+            "next": "Prefer `--diff-json` when the project can export it; keep text diff as fallback.",
         },
         {
             "area": "variant search",
-            "status": "partial",
-            "why": "`experiments` creates a bounded queue, but the harness does not yet generate or batch-test source variants.",
-            "next": "Add a variant runner that applies one patch at a time, runs the oracle, records metrics, then auto-reverts losers.",
+            "status": "covered",
+            "why": "`variants` applies patch files one at a time, runs the oracle, records metrics, and reverses each patch unless `--keep-best` is requested.",
+            "next": "Have agents generate patch candidates into a patch directory, then let the runner test them mechanically.",
         },
         {
             "area": "target ranking",
-            "status": "partial" if adapter == "dtk" else "open",
-            "why": "`targets` lists candidate nonmatching objects, but does not rank by size, dependency risk, or recent progress.",
-            "next": "Rank targets by small function count, available decompiler output, issue labels, and low shared-header blast radius.",
+            "status": "covered",
+            "why": "`targets --rank` scores candidates by source size, nonmatching markers, target kind, and shared-subsystem risk.",
+            "next": "Use the ranked list to seed lower-risk goals first.",
         },
         {
             "area": "long-run supervision",
-            "status": "partial",
-            "why": "`codex --mode tmux` launches a long run and `coach` detects plateaus, but no supervisor wakes up to inject leads or restart a stuck runner.",
-            "next": "Add a monitor command that periodically runs coach/dashboard, summarizes status, and emits a steering prompt when plateaued.",
+            "status": "covered",
+            "why": "`monitor` periodically runs coach/dashboard and writes a steering prompt when a run is blocked or plateaued.",
+            "next": "Run it beside tmux sessions to decide when to inject a lead or resume with xhigh.",
         },
         {
             "area": "multi-decompiler ingestion",
-            "status": "open",
-            "why": "The harness can store decompiler leads as text, but cannot normalize RootCubed Ghidra, IDA, and Binja output into comparable hypotheses.",
-            "next": "Define a lead schema: function, pseudocode shape, suspicious type/layout claims, and disagreements between decompilers.",
+            "status": "covered",
+            "why": "`decompilers` records source/function/pseudocode/notes/confidence and compares agreement across Ghidra, IDA, Binja, or other tools.",
+            "next": "Record every external decompiler view before last-mile variant sweeps.",
         },
         {
             "area": "original input boundary",
@@ -1067,21 +1360,102 @@ def render_svg_chart(points: list[dict[str, Any]]) -> str:
 </svg>"""
 
 
-def get_diff_text(repo: Path, unit: str | None, diff_file: Path | None) -> tuple[str | None, str | None]:
+def read_json(path: Path) -> Any:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def compact_value(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (int, float, bool)) or value is None:
+        return str(value)
+    return json.dumps(value, sort_keys=True)
+
+
+def flatten_json_fragments(value: Any, path: str = "") -> list[str]:
+    fragments = []
+    interesting = re.compile(
+        r"(diff|mismatch|instruction|mnemonic|opcode|disasm|asm|symbol|function|name|left|right|target|current|base|candidate|reloc|string|score|match)",
+        re.I,
+    )
+    if isinstance(value, dict):
+        for key, child in value.items():
+            child_path = f"{path}.{key}" if path else str(key)
+            if interesting.search(str(key)) and not isinstance(child, (dict, list)):
+                fragments.append(f"{child_path}: {compact_value(child)}")
+            fragments.extend(flatten_json_fragments(child, child_path))
+    elif isinstance(value, list):
+        for idx, child in enumerate(value):
+            fragments.extend(flatten_json_fragments(child, f"{path}[{idx}]"))
+    return fragments
+
+
+def iter_dicts(value: Any) -> list[dict[str, Any]]:
+    found = []
+    if isinstance(value, dict):
+        found.append(value)
+        for child in value.values():
+            found.extend(iter_dicts(child))
+    elif isinstance(value, list):
+        for child in value:
+            found.extend(iter_dicts(child))
+    return found
+
+
+def parse_structured_diff(path: Path, fmt: str) -> dict[str, Any]:
+    data = read_json(path)
+    fragments = flatten_json_fragments(data)
+    functions = []
+    first_difference = None
+    for item in iter_dicts(data):
+        keys = {str(key).lower() for key in item}
+        name = item.get("function") or item.get("name") or item.get("symbol") or item.get("label")
+        if name and ({"score", "matched", "diff", "diffs", "instructions", "base", "target", "current", "candidate"} & keys):
+            functions.append(
+                {
+                    "name": str(name),
+                    "matched": item.get("matched"),
+                    "score": item.get("score") or item.get("similarity") or item.get("fuzzy"),
+                }
+            )
+        if first_difference is None and any("mismatch" in key or "diff" in key for key in keys):
+            first_difference = {str(key): item[key] for key in item if "mismatch" in str(key).lower() or "diff" in str(key).lower()}
+    text = "\n".join(fragments)
+    if not text:
+        text = json.dumps(data, sort_keys=True)[:12000]
+    return {
+        "format": fmt,
+        "path": str(path),
+        "functions": functions[:40],
+        "first_difference": first_difference,
+        "text": text,
+    }
+
+
+def get_diff_text(
+    repo: Path,
+    unit: str | None,
+    diff_file: Path | None,
+    diff_json: Path | None,
+    diff_format: str,
+) -> tuple[str | None, str | None, dict[str, Any] | None]:
+    if diff_json:
+        structured = parse_structured_diff(diff_json, diff_format)
+        return structured["text"], None, structured
     if diff_file:
-        return diff_file.read_text(encoding="utf-8"), None
+        return diff_file.read_text(encoding="utf-8"), None, None
 
     config = load_config(repo)
     command = config.get("commands", {}).get("diff")
     if not command:
-        return None, "diff_command_missing"
+        return None, "diff_command_missing", None
     unit = unit or config.get("project", {}).get("default_unit")
     if not unit:
-        return None, "missing_unit"
+        return None, "missing_unit", None
     result = run_command("diff", command, repo, unit)
     if result.exit_code != 0:
-        return result.combined_output, "diff_failed"
-    return result.stdout, None
+        return result.combined_output, "diff_failed", None
+    return result.stdout, None, None
 
 
 def classify_diff(diff_text: str | None) -> dict[str, Any]:
@@ -1095,6 +1469,7 @@ def classify_diff(diff_text: str | None) -> dict[str, Any]:
 
     text = diff_text.lower()
     changed_lines = [line for line in diff_text.splitlines() if line.startswith(("+", "-")) and not line.startswith(("+++", "---"))]
+    changed_blob = "\n".join(changed_lines) or diff_text
     classifications: list[dict[str, Any]] = []
 
     def add(kind: str, confidence: str, evidence: str, actions: list[str]) -> None:
@@ -1131,7 +1506,7 @@ def classify_diff(diff_text: str | None) -> dict[str, Any]:
             ],
         )
 
-    if re.search(r"(#?0x[0-9a-f]+|\b-?\d+\b)", "\n".join(changed_lines), re.I):
+    if re.search(r"(#?0x[0-9a-f]+|\b-?\d+\b)", changed_blob, re.I):
         add(
             "constant_type_or_enum",
             "medium",
@@ -1143,7 +1518,7 @@ def classify_diff(diff_text: str | None) -> dict[str, Any]:
             ],
         )
 
-    if re.search(r"\b(r[0-9]+|f[0-9]+|w[0-9]+|x[0-9]+)\b", "\n".join(changed_lines)):
+    if re.search(r"\b(r[0-9]+|f[0-9]+|w[0-9]+|x[0-9]+)\b", changed_blob):
         add(
             "register_allocation_or_temp_lifetime",
             "medium",
@@ -1203,14 +1578,21 @@ def classify_diff(diff_text: str | None) -> dict[str, Any]:
     }
 
 
-def build_lead_report(repo: Path, unit: str | None, diff_file: Path | None) -> dict[str, Any]:
-    diff_text, blocker = get_diff_text(repo, unit, diff_file)
+def build_lead_report(
+    repo: Path,
+    unit: str | None,
+    diff_file: Path | None,
+    diff_json: Path | None,
+    diff_format: str,
+) -> dict[str, Any]:
+    diff_text, blocker, structured = get_diff_text(repo, unit, diff_file, diff_json, diff_format)
     diagnosis = classify_diff(diff_text)
     return {
         "repo": str(repo),
         "unit": unit,
         "diff_available": diff_text is not None and blocker is None,
         "blocker": blocker,
+        "structured_diff": structured,
         "classifications": diagnosis["classifications"],
         "next_actions": diagnosis["next_actions"],
         "anti_masochism": [
@@ -1225,6 +1607,13 @@ def print_lead_report(report: dict[str, Any]) -> None:
     if report.get("blocker"):
         print(f"blocker: {report['blocker']}")
     print(f"unit: {report.get('unit') or '-'}")
+    structured = report.get("structured_diff")
+    if structured:
+        print(f"structured_diff: {structured.get('format')} {structured.get('path')}")
+        if structured.get("functions"):
+            print("functions:")
+            for item in structured["functions"][:8]:
+                print(f"- {item.get('name')} matched={item.get('matched')} score={item.get('score')}")
     if not report.get("classifications"):
         print("classifications: none")
     else:
@@ -1335,6 +1724,76 @@ def print_coach_report(report: dict[str, Any]) -> None:
     print("advice:")
     for item in report["advice"]:
         print(f"- {item}")
+
+
+def render_monitor_prompt(repo: Path, unit: str | None, coach: dict[str, Any]) -> str:
+    advice = "\n".join(f"- {item}" for item in coach.get("advice", []))
+    return f"""# Decomp Goal Monitor
+
+Updated: {datetime.now(timezone.utc).isoformat()}
+Repo: `{repo}`
+Unit: `{unit or '-'}`
+Status: `{coach['status']}`
+
+## Steering Prompt
+
+The latest decomp goal run appears to need steering.
+
+{advice}
+
+Next operator action:
+
+1. Open the latest diff in objdiff/asm-differ.
+2. Record a concrete lead with `decomp-goal steer --source <source> --text ...`.
+3. Relaunch or resume the Codex goal with the injected lead.
+"""
+
+
+def monitor_once(repo: Path, state_dir: Path, unit: str | None, dashboard_out: Path | None, title: str) -> dict[str, Any]:
+    records = load_history(state_dir)
+    coach = coach_history(records, min_runs=3, plateau_runs=3)
+    dashboard_path = None
+    if dashboard_out:
+        dashboard_out.parent.mkdir(parents=True, exist_ok=True)
+        dashboard_out.write_text(generate_dashboard(records, title), encoding="utf-8")
+        dashboard_path = str(dashboard_out)
+    prompt_path = None
+    if coach["status"] in {"plateau", "last_mile", "last_mile_plateau", "blocked"}:
+        path = default_monitor_path(repo)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(render_monitor_prompt(repo, unit, coach), encoding="utf-8")
+        prompt_path = str(path)
+    return {
+        "repo": str(repo),
+        "unit": unit,
+        "coach": coach,
+        "dashboard": dashboard_path,
+        "steering_prompt": prompt_path,
+    }
+
+
+def run_monitor(
+    repo: Path,
+    state_dir: Path,
+    unit: str | None,
+    dashboard_out: Path | None,
+    title: str,
+    interval_seconds: int,
+    max_ticks: int,
+    json_output: bool,
+) -> int:
+    last_report = None
+    for tick in range(max(1, max_ticks)):
+        last_report = monitor_once(repo, state_dir, unit, dashboard_out, title)
+        last_report["tick"] = tick + 1
+        if json_output:
+            print(json.dumps(last_report, indent=2))
+        else:
+            coach = last_report["coach"]
+            print(f"tick={tick + 1} status={coach['status']} dashboard={last_report.get('dashboard') or '-'} steering={last_report.get('steering_prompt') or '-'}")
+        if tick + 1 < max_ticks:
+            time.sleep(interval_seconds)
+    return 0
 
 
 def render_experiments(repo: Path, unit: str | None, lead: dict[str, Any]) -> str:
@@ -1483,6 +1942,7 @@ def main(argv: list[str] | None = None) -> int:
     targets_p.add_argument("--repo", type=repo_path, default=Path.cwd())
     targets_p.add_argument("--limit", type=int, default=40)
     targets_p.add_argument("--query")
+    targets_p.add_argument("--rank", action="store_true")
     targets_p.add_argument("--json", action="store_true")
 
     goal_p = sub.add_parser("goal", help="Render a /goal prompt packet")
@@ -1520,14 +1980,28 @@ def main(argv: list[str] | None = None) -> int:
     lead_p.add_argument("--repo", type=repo_path, default=Path.cwd())
     lead_p.add_argument("--unit")
     lead_p.add_argument("--diff-file", type=Path)
+    lead_p.add_argument("--diff-json", type=Path)
+    lead_p.add_argument("--diff-format", default="auto", choices=["auto", "objdiff", "asm-differ", "generic"])
     lead_p.add_argument("--json", action="store_true")
 
     experiments_p = sub.add_parser("experiments", help="Write a bounded experiment queue for the current target")
     experiments_p.add_argument("--repo", type=repo_path, default=Path.cwd())
     experiments_p.add_argument("--unit")
     experiments_p.add_argument("--diff-file", type=Path)
+    experiments_p.add_argument("--diff-json", type=Path)
+    experiments_p.add_argument("--diff-format", default="auto", choices=["auto", "objdiff", "asm-differ", "generic"])
     experiments_p.add_argument("--out", type=Path)
     experiments_p.add_argument("--json", action="store_true")
+
+    variants_p = sub.add_parser("variants", help="Apply patch variants one at a time, run the oracle, and revert losers")
+    variants_p.add_argument("--repo", type=repo_path, default=Path.cwd())
+    variants_p.add_argument("--unit")
+    variants_p.add_argument("--state-dir", type=Path)
+    variants_p.add_argument("--patch-dir", type=Path)
+    variants_p.add_argument("--patch", type=Path, action="append")
+    variants_p.add_argument("--keep-best", action="store_true")
+    variants_p.add_argument("--allow-dirty", action="store_true")
+    variants_p.add_argument("--json", action="store_true")
 
     steer_p = sub.add_parser("steer", help="Record or list external steering leads for the next goal prompt")
     steer_p.add_argument("--repo", type=repo_path, default=Path.cwd())
@@ -1538,10 +2012,31 @@ def main(argv: list[str] | None = None) -> int:
     steer_p.add_argument("--limit", type=int, default=5)
     steer_p.add_argument("--json", action="store_true")
 
+    decompilers_p = sub.add_parser("decompilers", help="Record or compare structured decompiler leads")
+    decompilers_p.add_argument("--repo", type=repo_path, default=Path.cwd())
+    decompilers_p.add_argument("--unit")
+    decompilers_p.add_argument("--source")
+    decompilers_p.add_argument("--function")
+    decompilers_p.add_argument("--pseudocode")
+    decompilers_p.add_argument("--file", type=Path)
+    decompilers_p.add_argument("--notes")
+    decompilers_p.add_argument("--confidence", choices=["low", "medium", "high"])
+    decompilers_p.add_argument("--json", action="store_true")
+
     gaps_p = sub.add_parser("gaps", help="Audit missing pieces against a banteg-style decomp goal loop")
     gaps_p.add_argument("--repo", type=repo_path, default=Path.cwd())
     gaps_p.add_argument("--state-dir", type=Path)
     gaps_p.add_argument("--json", action="store_true")
+
+    monitor_p = sub.add_parser("monitor", help="Run a lightweight long-session monitor and write steering prompts")
+    monitor_p.add_argument("--repo", type=repo_path, default=Path.cwd())
+    monitor_p.add_argument("--unit")
+    monitor_p.add_argument("--state-dir", type=Path)
+    monitor_p.add_argument("--dashboard-out", type=Path)
+    monitor_p.add_argument("--title", default="Decomp Goal Progress")
+    monitor_p.add_argument("--interval", type=int, default=300)
+    monitor_p.add_argument("--max-ticks", type=int, default=1)
+    monitor_p.add_argument("--json", action="store_true")
 
     dashboard_p = sub.add_parser("dashboard", help="Generate a local HTML progress dashboard")
     dashboard_p.add_argument("--repo", type=repo_path, default=Path.cwd())
@@ -1593,13 +2088,14 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(info, indent=2))
         return 0
     if args.command == "targets":
-        targets = list_targets(args.repo, args.limit, args.query)
+        targets = list_targets(args.repo, args.limit, args.query, args.rank)
         if args.json:
             print(json.dumps(targets, indent=2))
         else:
             for target in targets:
                 kind = target.get("kind", "")
-                print(f"{target.get('status', ''):12} {target.get('path')} {target.get('line', '')} {kind}")
+                rank = f" score={target.get('rank_score')}" if args.rank else ""
+                print(f"{target.get('status', ''):12} {target.get('path')} {target.get('line', '')} {kind}{rank}")
         return 0
     if args.command == "goal":
         print(render_goal(args.repo, args.unit, args.name, args.issue).strip())
@@ -1643,14 +2139,14 @@ def main(argv: list[str] | None = None) -> int:
             print_coach_report(report)
         return 0
     if args.command == "lead":
-        report = build_lead_report(args.repo, args.unit, args.diff_file)
+        report = build_lead_report(args.repo, args.unit, args.diff_file, args.diff_json, args.diff_format)
         if args.json:
             print(json.dumps(report, indent=2))
         else:
             print_lead_report(report)
         return 0
     if args.command == "experiments":
-        lead = build_lead_report(args.repo, args.unit, args.diff_file)
+        lead = build_lead_report(args.repo, args.unit, args.diff_file, args.diff_json, args.diff_format)
         out = (args.out.resolve() if args.out else default_experiments_path(args.repo, args.unit))
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(render_experiments(args.repo, args.unit, lead), encoding="utf-8")
@@ -1659,6 +2155,17 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(result, indent=2))
         else:
             print(out)
+        return 0
+    if args.command == "variants":
+        state_dir = (args.state_dir.resolve() if args.state_dir else default_state_dir(args.repo))
+        patch_paths = collect_patch_paths(args.repo, args.patch_dir, args.patch)
+        report = run_variant_batch(args.repo, args.unit, state_dir, patch_paths, args.keep_best, args.allow_dirty)
+        if args.json:
+            print(json.dumps(report, indent=2))
+        else:
+            print(f"tested: {report['tested']}")
+            print(f"best_patch: {report['best_patch'] or '-'}")
+            print(f"kept_patch: {report['kept_patch'] or '-'}")
         return 0
     if args.command == "steer":
         parts = []
@@ -1681,6 +2188,36 @@ def main(argv: list[str] | None = None) -> int:
             for lead in leads:
                 print(f"{lead['created_at']} {lead['source']} {lead['unit']} {lead['path']}")
         return 0
+    if args.command == "decompilers":
+        parts = []
+        if args.file:
+            parts.append(args.file.read_text(encoding="utf-8"))
+        if args.pseudocode:
+            parts.append(args.pseudocode)
+        if parts:
+            if not args.source:
+                raise SystemExit("--source is required when recording a decompiler lead")
+            path = write_decompiler_record(
+                args.repo,
+                args.unit,
+                args.source,
+                args.function,
+                "\n\n".join(parts),
+                args.notes,
+                args.confidence,
+            )
+            result = {"path": str(path)}
+            if args.json:
+                print(json.dumps(result, indent=2))
+            else:
+                print(path)
+            return 0
+        report = build_decompiler_report(args.repo, args.unit, args.function)
+        if args.json:
+            print(json.dumps(report, indent=2))
+        else:
+            print_decompiler_report(report)
+        return 0
     if args.command == "gaps":
         state_dir = (args.state_dir.resolve() if args.state_dir else default_state_dir(args.repo))
         report = build_gap_report(args.repo, state_dir)
@@ -1689,6 +2226,19 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print_gap_report(report)
         return 0
+    if args.command == "monitor":
+        state_dir = (args.state_dir.resolve() if args.state_dir else default_state_dir(args.repo))
+        dashboard_out = args.dashboard_out.resolve() if args.dashboard_out else None
+        return run_monitor(
+            args.repo,
+            state_dir,
+            args.unit,
+            dashboard_out,
+            args.title,
+            args.interval,
+            args.max_ticks,
+            args.json,
+        )
     if args.command == "dashboard":
         state_dir = (args.state_dir.resolve() if args.state_dir else default_state_dir(args.repo))
         out = (args.out.resolve() if args.out else default_dashboard_path(args.repo))

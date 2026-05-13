@@ -1,0 +1,26 @@
+{
+  "unit": "attempt.start.c",
+  "functions": [
+    {
+      "name": "score_room",
+      "matched": false,
+      "score": 0.973,
+      "first_mismatch": {
+        "target": "imul $0x11,%edi,%eax",
+        "current": "shl $0x4,%edi"
+      },
+      "instructions": [
+        {
+          "address": "0x0004",
+          "target": "add $0x1f,%eax",
+          "current": "add $0x1e,%eax"
+        },
+        {
+          "address": "0x0012",
+          "target": "cmp $0x2,%esi",
+          "current": "cmp $0x3,%esi"
+        }
+      ]
+    }
+  ]
+}
