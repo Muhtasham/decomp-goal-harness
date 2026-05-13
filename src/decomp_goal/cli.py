@@ -155,6 +155,13 @@ def default_prompt_path(repo: Path) -> Path:
     return git_path(repo, "decomp-goal/goal.txt") or (repo / ".decomp-goal" / "goal.txt").resolve()
 
 
+def default_experiments_path(repo: Path, unit: str | None) -> Path:
+    safe_unit = re.sub(r"[^A-Za-z0-9_.-]+", "-", unit or "target").strip("-") or "target"
+    return git_path(repo, f"decomp-goal/experiments/{safe_unit}.md") or (
+        repo / ".decomp-goal" / "experiments" / f"{safe_unit}.md"
+    ).resolve()
+
+
 def inspect_repo(repo: Path) -> dict[str, Any]:
     config = load_config(repo)
     adapter = detect_adapter(repo, config)
@@ -394,6 +401,12 @@ Rules:
 - When stuck, classify the mismatch: layout, string pool, branch shape, regalloc, weak/template ordering, relocation, inline, missing type, or missing original input.
 - Treat layout cascades carefully: a tiny function body can realign downstream code and create large apparent jumps.
 - Record near-matches with the exact remaining delta instead of hiding them behind fake source tricks.
+
+Last-mile protocol:
+- If fuzzy/code score is high but exact matching stalls, stop broad rewrites and classify the diff first.
+- Generate a short experiment queue, run one hypothesis at a time, and revert variants that do not improve the oracle.
+- Prefer evidence-bearing leads: nearby matched code, debug maps, decompiler agreement/disagreement, objdiff relocation/string deltas, and exact changed instruction classes.
+- If three consecutive runs do not improve, write down the blocker before continuing.
 
 Validation:
 - {validation}
@@ -797,6 +810,311 @@ def render_svg_chart(points: list[dict[str, Any]]) -> str:
 </svg>"""
 
 
+def get_diff_text(repo: Path, unit: str | None, diff_file: Path | None) -> tuple[str | None, str | None]:
+    if diff_file:
+        return diff_file.read_text(encoding="utf-8"), None
+
+    config = load_config(repo)
+    command = config.get("commands", {}).get("diff")
+    if not command:
+        return None, "diff_command_missing"
+    unit = unit or config.get("project", {}).get("default_unit")
+    if not unit:
+        return None, "missing_unit"
+    result = run_command("diff", command, repo, unit)
+    if result.exit_code != 0:
+        return result.combined_output, "diff_failed"
+    return result.stdout, None
+
+
+def classify_diff(diff_text: str | None) -> dict[str, Any]:
+    if not diff_text:
+        return {
+            "classifications": [],
+            "next_actions": [
+                "Export the current objdiff/asm diff or configure a `[commands].diff` entry, then rerun `decomp-goal lead`.",
+            ],
+        }
+
+    text = diff_text.lower()
+    changed_lines = [line for line in diff_text.splitlines() if line.startswith(("+", "-")) and not line.startswith(("+++", "---"))]
+    classifications: list[dict[str, Any]] = []
+
+    def add(kind: str, confidence: str, evidence: str, actions: list[str]) -> None:
+        classifications.append(
+            {
+                "kind": kind,
+                "confidence": confidence,
+                "evidence": evidence,
+                "actions": actions,
+            }
+        )
+
+    if any(token in text for token in ["stringbase", ".rodata", "cstring", "string table"]):
+        add(
+            "string_pool_or_rodata",
+            "high",
+            "diff references string table or rodata symbols",
+            [
+                "Find earlier/later users of the same string and preserve original string-pool order.",
+                "Check whether a missing earlier function/data item should own the string before forcing this function.",
+                "Avoid fake references; prefer source that naturally emits the existing string entry.",
+            ],
+        )
+
+    if re.search(r"\b(beq|bne|blt|bgt|ble|bge|b\s|bc|cmp|cmpl|csel|cbz|cbnz)\b", text):
+        add(
+            "branch_shape_or_condition",
+            "medium",
+            "diff contains branch/compare instructions",
+            [
+                "Try condition polarity changes without changing behavior.",
+                "Check signedness of compared operands and enum/boolean types.",
+                "Look for early-return vs nested-if source shape differences.",
+            ],
+        )
+
+    if re.search(r"(#?0x[0-9a-f]+|\b-?\d+\b)", "\n".join(changed_lines), re.I):
+        add(
+            "constant_type_or_enum",
+            "medium",
+            "changed lines contain immediates/constants",
+            [
+                "Verify enum constants, resource IDs, line numbers in asserts, and float/double literal suffixes.",
+                "Check `int` vs typedef width: in these projects `int` and `s32` can affect codegen.",
+                "Replace magic values with the project enum/macro only when nearby matched code supports it.",
+            ],
+        )
+
+    if re.search(r"\b(r[0-9]+|f[0-9]+|w[0-9]+|x[0-9]+)\b", "\n".join(changed_lines)):
+        add(
+            "register_allocation_or_temp_lifetime",
+            "medium",
+            "changed lines mention physical registers",
+            [
+                "Shorten or extend temp lifetimes by splitting expressions or introducing locals.",
+                "Try `const` placement and reference/value parameter shape on inlines.",
+                "Compare variable use order against the target highlighting before broad rewrites.",
+            ],
+        )
+
+    if any(token in text for token in ["reloc", "relocation", "@ha", "@l", "bl ", "symbol not found"]):
+        add(
+            "relocation_or_call_target",
+            "medium",
+            "diff references call/relocation-sensitive output",
+            [
+                "Check call target/inlining choice against debug maps and nearby matched functions.",
+                "Verify static/global object order before changing function bodies.",
+                "If many downstream addresses shift, suspect layout cascade rather than many bad functions.",
+            ],
+        )
+
+    if any(token in text for token in ["sp", "r1", "stwu", "lwz", "stw", "stack"]):
+        add(
+            "stack_frame_or_local_layout",
+            "medium",
+            "diff references stack-relative loads/stores or frame setup",
+            [
+                "Check local variable type sizes, declaration order, and arrays/struct temporaries.",
+                "Try extracting complex call arguments into locals in target order.",
+                "Inspect constructors/destructors that can insert hidden stack temporaries.",
+            ],
+        )
+
+    if not classifications:
+        add(
+            "unknown_last_mile",
+            "low",
+            "diff did not match built-in patterns",
+            [
+                "Reduce to one function or one changed region and annotate the exact first differing instruction.",
+                "Compare decompiler outputs and nearby matched code before random source perturbation.",
+                "Create a bounded experiment queue and record failed hypotheses.",
+            ],
+        )
+
+    next_actions = []
+    for item in classifications:
+        for action in item["actions"]:
+            if action not in next_actions:
+                next_actions.append(action)
+
+    return {
+        "classifications": classifications,
+        "next_actions": next_actions[:12],
+    }
+
+
+def build_lead_report(repo: Path, unit: str | None, diff_file: Path | None) -> dict[str, Any]:
+    diff_text, blocker = get_diff_text(repo, unit, diff_file)
+    diagnosis = classify_diff(diff_text)
+    return {
+        "repo": str(repo),
+        "unit": unit,
+        "diff_available": diff_text is not None and blocker is None,
+        "blocker": blocker,
+        "classifications": diagnosis["classifications"],
+        "next_actions": diagnosis["next_actions"],
+        "anti_masochism": [
+            "Do not keep freeform-editing after a high fuzzy score. Name the mismatch class first.",
+            "Run one hypothesis per variant and keep only variants that improve the oracle.",
+            "Escalate to human/decompiler/debug-map leads when the same class survives three variants.",
+        ],
+    }
+
+
+def print_lead_report(report: dict[str, Any]) -> None:
+    if report.get("blocker"):
+        print(f"blocker: {report['blocker']}")
+    print(f"unit: {report.get('unit') or '-'}")
+    if not report.get("classifications"):
+        print("classifications: none")
+    else:
+        print("classifications:")
+        for item in report["classifications"]:
+            print(f"- {item['kind']} ({item['confidence']}): {item['evidence']}")
+    print("next actions:")
+    for action in report.get("next_actions", []):
+        print(f"- {action}")
+
+
+def coach_history(records: list[dict[str, Any]], min_runs: int, plateau_runs: int) -> dict[str, Any]:
+    summary = summarize_history(records)
+    recent = records[-plateau_runs:] if plateau_runs > 0 else records
+    advice: list[str] = []
+    status = "no_history"
+    plateau = False
+    high_score = False
+
+    if not records:
+        advice.append("Run the oracle once with `decomp-goal run` so there is a baseline.")
+        return {"status": status, "summary": summary, "plateau": plateau, "high_score": high_score, "advice": advice}
+
+    last = records[-1]
+    if last.get("matched") is True:
+        return {
+            "status": "matched",
+            "summary": summary,
+            "plateau": False,
+            "high_score": True,
+            "advice": ["Current latest run is exact. Commit only if the worktree contains the source change that produced this result."],
+        }
+    if last.get("blocker"):
+        return {
+            "status": "blocked",
+            "summary": summary,
+            "plateau": False,
+            "high_score": False,
+            "advice": [f"Resolve blocker first: {last['blocker']}."],
+        }
+
+    last_metrics = records[-1].get("_metrics") or {}
+    last_code = last_metrics.get("matched_code_percent")
+    last_fuzzy = last_metrics.get("fuzzy_percent")
+    high_score = any(value is not None and value >= 99.0 for value in [last_code, last_fuzzy])
+
+    def metric_key(record: dict[str, Any]) -> tuple[Any, Any, Any]:
+        metrics = record.get("_metrics") or {}
+        return (
+            metrics.get("matched_code"),
+            metrics.get("exact_functions"),
+            metrics.get("fuzzy_percent"),
+        )
+
+    plateau = len(records) >= max(min_runs, plateau_runs) and len({metric_key(record) for record in recent}) <= 1
+
+    if plateau and high_score:
+        status = "last_mile_plateau"
+        advice.extend(
+            [
+                "Stop broad rewrites. Generate a diff lead and run a bounded experiment queue.",
+                "Classify the first remaining mismatch before editing: string pool, branch shape, regalloc, relocation, inline, stack layout, or missing type.",
+                "Inject a human/decompiler lead if three single-hypothesis variants do not improve the oracle.",
+            ]
+        )
+    elif plateau:
+        status = "plateau"
+        advice.extend(
+            [
+                "The recent run metrics are flat. Pick a smaller unit or function and require one measurable improvement.",
+                "Run `decomp-goal lead` with a diff file or configured diff command before the next edit.",
+            ]
+        )
+    elif high_score:
+        status = "last_mile"
+        advice.extend(
+            [
+                "High score detected. Switch from exploration to evidence-led variants.",
+                "Commit only exact improvements, byte improvements, or documented layout unblocks.",
+            ]
+        )
+    else:
+        status = "making_progress_or_early"
+        advice.extend(
+            [
+                "Continue normal compile-diff-edit loops.",
+                "Keep commits small and record the first mismatch class when progress slows.",
+            ]
+        )
+
+    if summary.get("last_blocker"):
+        advice.append(f"Resolve blocker first: {summary['last_blocker']}.")
+
+    return {
+        "status": status,
+        "summary": summary,
+        "plateau": plateau,
+        "high_score": high_score,
+        "advice": advice,
+    }
+
+
+def print_coach_report(report: dict[str, Any]) -> None:
+    print(f"status: {report['status']}")
+    print(f"runs: {report['summary'].get('runs', 0)}")
+    print(f"plateau: {report['plateau']}")
+    print(f"high_score: {report['high_score']}")
+    print("advice:")
+    for item in report["advice"]:
+        print(f"- {item}")
+
+
+def render_experiments(repo: Path, unit: str | None, lead: dict[str, Any]) -> str:
+    classes = lead.get("classifications") or []
+    class_text = "\n".join(f"- {item['kind']}: {item['evidence']}" for item in classes) or "- No diff classification yet."
+    actions = "\n".join(f"- [ ] {action}" for action in lead.get("next_actions", [])) or "- [ ] Export a diff and classify it."
+    return f"""# Decomp Goal Experiment Queue
+
+Unit: `{unit or '-'}`
+Repo: `{repo}`
+
+## Current Mismatch Classes
+
+{class_text}
+
+## Rules
+
+- One hypothesis per variant.
+- Run the project oracle after each variant.
+- Keep only variants that improve exact functions, matched bytes, fuzzy score, or documented layout.
+- Revert non-improving variants before trying the next one.
+- Do not patch binaries or generated original data.
+
+## Next Actions
+
+{actions}
+
+## Variant Log
+
+| Variant | Hypothesis | Source edit | Oracle result | Keep/Revert | Notes |
+| --- | --- | --- | --- | --- | --- |
+| 001 |  |  |  |  |  |
+| 002 |  |  |  |  |  |
+| 003 |  |  |  |  |  |
+"""
+
+
 def render_codex_runner(
     repo: Path,
     unit: str | None,
@@ -920,6 +1238,26 @@ def main(argv: list[str] | None = None) -> int:
     history_p.add_argument("--state-dir", type=Path)
     history_p.add_argument("--json", action="store_true")
 
+    coach_p = sub.add_parser("coach", help="Summarize progress and suggest the next last-mile action")
+    coach_p.add_argument("--repo", type=repo_path, default=Path.cwd())
+    coach_p.add_argument("--state-dir", type=Path)
+    coach_p.add_argument("--min-runs", type=int, default=3)
+    coach_p.add_argument("--plateau-runs", type=int, default=3)
+    coach_p.add_argument("--json", action="store_true")
+
+    lead_p = sub.add_parser("lead", help="Classify a current asm/object diff and suggest matching hypotheses")
+    lead_p.add_argument("--repo", type=repo_path, default=Path.cwd())
+    lead_p.add_argument("--unit")
+    lead_p.add_argument("--diff-file", type=Path)
+    lead_p.add_argument("--json", action="store_true")
+
+    experiments_p = sub.add_parser("experiments", help="Write a bounded experiment queue for the current target")
+    experiments_p.add_argument("--repo", type=repo_path, default=Path.cwd())
+    experiments_p.add_argument("--unit")
+    experiments_p.add_argument("--diff-file", type=Path)
+    experiments_p.add_argument("--out", type=Path)
+    experiments_p.add_argument("--json", action="store_true")
+
     dashboard_p = sub.add_parser("dashboard", help="Generate a local HTML progress dashboard")
     dashboard_p.add_argument("--repo", type=repo_path, default=Path.cwd())
     dashboard_p.add_argument("--state-dir", type=Path)
@@ -990,6 +1328,32 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps({"summary": summarize_history(records), "runs": records}, indent=2))
         else:
             print_history(records)
+        return 0
+    if args.command == "coach":
+        state_dir = (args.state_dir.resolve() if args.state_dir else default_state_dir(args.repo))
+        report = coach_history(load_history(state_dir), args.min_runs, args.plateau_runs)
+        if args.json:
+            print(json.dumps(report, indent=2))
+        else:
+            print_coach_report(report)
+        return 0
+    if args.command == "lead":
+        report = build_lead_report(args.repo, args.unit, args.diff_file)
+        if args.json:
+            print(json.dumps(report, indent=2))
+        else:
+            print_lead_report(report)
+        return 0
+    if args.command == "experiments":
+        lead = build_lead_report(args.repo, args.unit, args.diff_file)
+        out = (args.out.resolve() if args.out else default_experiments_path(args.repo, args.unit))
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(render_experiments(args.repo, args.unit, lead), encoding="utf-8")
+        result = {"path": str(out), "lead": lead}
+        if args.json:
+            print(json.dumps(result, indent=2))
+        else:
+            print(out)
         return 0
     if args.command == "dashboard":
         state_dir = (args.state_dir.resolve() if args.state_dir else default_state_dir(args.repo))

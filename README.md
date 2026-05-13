@@ -15,8 +15,6 @@ The intended workflow is the same shape as a focused Codex `/goal` run, inspired
 4. make small source edits,
 5. commit only measurable improvements.
 
-The harness does not decompile by itself. It gives an agent a repeatable loop and structured run records so the hard part can stay focused on compile-diff-edit reasoning.
-
 ## Install locally
 
 ```bash
@@ -83,6 +81,24 @@ View the run history:
 
 ```bash
 decomp-goal history --repo /path/to/project
+```
+
+Ask the harness whether the agent is stuck and what to do next:
+
+```bash
+decomp-goal coach --repo /path/to/project
+```
+
+Classify the current diff and generate next leads:
+
+```bash
+decomp-goal lead --repo /path/to/project --unit attempt.start.c
+```
+
+Write a bounded last-mile experiment queue:
+
+```bash
+decomp-goal experiments --repo /path/to/project --unit src/d/actor/d_a_obj_mmrr.cpp
 ```
 
 Generate a local banteg-style progress dashboard:
@@ -200,6 +216,16 @@ The harness is designed around the workflow shown in banteg's Wind Waker `d_a_pz
 - record the remaining mismatch class when stuck: string pool, relocation, branch shape, regalloc, weak/template ordering, inline, missing type, or missing original input.
 
 The harness is intentionally an oracle wrapper, not an autonomous source mutator. A `/goal` agent can consume its target list, goal packet, JSON run records, and dashboard while doing the actual source edits in the project worktree.
+
+## Reducing the last-mile grind
+
+The painful part starts when a TU is nearly correct but one or two functions still refuse to match. The harness tries to reduce that by forcing a more mechanical loop:
+
+1. `decomp-goal lead` classifies the diff into mismatch classes such as string pool, branch shape, regalloc, relocation/call target, stack frame, constant/type, or unknown.
+2. `decomp-goal experiments` writes a checklist for one-hypothesis-at-a-time variants under the repo's Git metadata path.
+3. `decomp-goal coach` watches run history for high-score plateaus and tells the agent to stop broad rewrites when it is stuck.
+
+That does not eliminate the hard part, but it keeps the agent from random-walking after 99%. The expected behavior is: classify first, try bounded variants, revert failures, preserve only oracle improvements, and ask for a human/decompiler/debug-map lead when the same mismatch class survives several variants.
 
 ## Credits
 
