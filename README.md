@@ -26,6 +26,18 @@ PYTHONPATH=src python3 -m decomp_goal --help
 
 ## Commands
 
+Discover active projects from decomp.dev:
+
+```bash
+decomp-goal projects --platform gc --query "Wind Waker"
+```
+
+Find candidate GitHub task issues:
+
+```bash
+decomp-goal issues --github zeldaret/tww --label "easy object" --unclaimed
+```
+
 Inspect a worktree:
 
 ```bash
@@ -60,7 +72,21 @@ Run one configure/build/score pass and write a JSON run record:
 decomp-goal run --repo /path/to/project --unit attempt.c
 ```
 
-Run records are written to `.decomp-goal/runs/` in the current directory by default.
+Run records are written to `<repo>/.decomp-goal/runs/` by default.
+
+View the run history:
+
+```bash
+decomp-goal history --repo /path/to/project
+```
+
+Generate a local banteg-style progress dashboard:
+
+```bash
+decomp-goal dashboard --repo /path/to/project --title "Princess Zelda TU Progress"
+```
+
+The dashboard tracks exact functions, matched code, fuzzy score, blockers, and commit/head change markers from stored run records.
 
 ## Adapters
 
@@ -99,7 +125,7 @@ ninja -v
 python3 configure.py progress
 ```
 
-It also parses `configure.py` for `Object(NonMatching, "...")` and `Object(Equivalent, "...")` entries to produce candidate targets.
+It also parses `configure.py` for `Object(NonMatching, "...")`, `Object(Equivalent, "...")`, and ZeldaRET-style `ActorRel(NonMatching, "...")` entries to produce candidate targets.
 
 The harness does not fetch or create original game inputs. If a project requires a legally obtained game image or extracted files, the run record reports `missing_original_input` instead of papering over it.
 
@@ -120,6 +146,25 @@ PYTHONPATH=src python3 -m decomp_goal run --repo examples/toy_match --unit attem
 ```
 
 This fixture proves the harness loop without requiring a commercial game image. Real ZeldaRET projects still use the project oracle, usually `objdiff`.
+
+Generate the toy dashboard:
+
+```bash
+PYTHONPATH=src python3 -m decomp_goal dashboard --repo examples/toy_match --title "Toy Match Progress"
+```
+
+## Banteg-inspired loop
+
+The harness is designed around the workflow shown in the Wind Waker `d_a_pz` run:
+
+- one translation unit goal at a time,
+- no fakematching or forbidden decomp tricks,
+- compile/diff/score after each meaningful edit,
+- commit only exact improvements, fuzzy improvements, or structural layout unblocks,
+- treat sudden exact-function jumps as possible layout cascades until proven,
+- record the remaining mismatch class when stuck: string pool, relocation, branch shape, regalloc, weak/template ordering, inline, missing type, or missing original input.
+
+The harness is intentionally an oracle wrapper, not an autonomous source mutator. A `/goal` agent can consume its target list, goal packet, JSON run records, and dashboard while doing the actual source edits in the project worktree.
 
 ## Example TWW goal packet
 
