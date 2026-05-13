@@ -223,6 +223,15 @@ def optional_repo_path(repo: Path, path: Path | None) -> Path | None:
     return path if path.is_absolute() else repo / path
 
 
+def repo_relative_or_default(repo: Path, path: Path | None, default: Path) -> Path:
+    if path is None:
+        return default
+    resolved = optional_repo_path(repo, path)
+    if resolved is None:
+        return default
+    return resolved.resolve()
+
+
 def inspect_repo(repo: Path) -> dict[str, Any]:
     config = load_config(repo)
     adapter = detect_adapter(repo, config)
@@ -758,6 +767,15 @@ def run_generic(repo: Path, config: dict[str, Any], unit: str | None) -> dict[st
     command_results: list[CommandResult] = []
     for name in ["configure", "build", "score"]:
         command = commands.get(name)
+        if name == "score" and not command:
+            return finish_result(
+                repo,
+                "generic",
+                unit,
+                command_results,
+                matched=False,
+                blocker="missing_score_command",
+            )
         if not command:
             continue
         res = run_command(name, command, repo, unit)
@@ -798,8 +816,17 @@ def run_dtk(repo: Path, unit: str | None) -> dict[str, Any]:
 
     progress = run_command("progress", "python3 configure.py progress", repo, unit)
     command_results.append(progress)
+    if progress.exit_code != 0:
+        return finish_result(
+            repo,
+            "dtk",
+            unit,
+            command_results,
+            matched=False,
+            blocker=classify_blocker(progress.combined_output),
+        )
     score = parse_dtk_progress(progress.stdout)
-    return finish_result(repo, "dtk", unit, command_results, matched=None, score=score)
+    return finish_result(repo, "dtk", unit, command_results, matched=dtk_progress_matched(score), score=score)
 
 
 def parse_score(stdout: str) -> dict[str, Any]:
@@ -823,9 +850,42 @@ def parse_dtk_progress(stdout: str) -> dict[str, Any]:
         elif current is not None and (stripped.startswith("Code:") or stripped.startswith("Data:")):
             key = "code" if stripped.startswith("Code:") else "data"
             current[key] = stripped
+            stats = parse_dtk_progress_stats(stripped)
+            if stats:
+                current[f"{key}_stats"] = stats
     if current:
         categories.append(current)
     return {"progress_categories": categories, "raw": stdout.strip()}
+
+
+def parse_dtk_progress_stats(line: str) -> dict[str, int] | None:
+    match = re.search(
+        r":\s+(?P<matched>\d+)\s+/\s+(?P<total>\d+)\s+bytes(?:\s+\((?P<funcs>\d+)\s+/\s+(?P<total_funcs>\d+)\s+functions\))?",
+        line,
+    )
+    if not match:
+        return None
+    stats = {
+        "matched": int(match.group("matched")),
+        "total": int(match.group("total")),
+    }
+    if match.group("funcs") is not None and match.group("total_funcs") is not None:
+        stats["functions"] = int(match.group("funcs"))
+        stats["total_functions"] = int(match.group("total_funcs"))
+    return stats
+
+
+def dtk_progress_matched(score: dict[str, Any]) -> bool | None:
+    categories = score.get("progress_categories") or []
+    stats: list[dict[str, int]] = []
+    for category in categories:
+        for key in ["code_stats", "data_stats"]:
+            item = category.get(key)
+            if item:
+                stats.append(item)
+    if not stats:
+        return None
+    return all(item["matched"] == item["total"] for item in stats)
 
 
 def classify_blocker(output: str) -> str:
@@ -923,23 +983,20 @@ def extract_metrics(record: dict[str, Any]) -> dict[str, Any]:
         metrics["total_functions"] = 1
 
     if "progress_categories" in score:
-        categories = score.get("progress_categories") or []
-        if categories:
-            first = categories[0]
-            code_line = first.get("code")
-            if code_line:
-                code_match = re.search(
-                    r"Code:\s+(?P<matched>\d+)\s+/\s+(?P<total>\d+)\s+bytes\s+\((?P<funcs>\d+)\s+/\s+(?P<total_funcs>\d+)\s+functions\)",
-                    code_line,
-                )
-                if code_match:
-                    matched = int(code_match.group("matched"))
-                    total = int(code_match.group("total"))
-                    metrics["matched_code"] = matched
-                    metrics["total_code"] = total
-                    metrics["matched_code_percent"] = matched / total * 100 if total else None
-                    metrics["exact_functions"] = int(code_match.group("funcs"))
-                    metrics["total_functions"] = int(code_match.group("total_funcs"))
+        code_stats = [
+            category["code_stats"] for category in score.get("progress_categories") or [] if category.get("code_stats")
+        ]
+        if code_stats:
+            matched = sum(item["matched"] for item in code_stats)
+            total = sum(item["total"] for item in code_stats)
+            funcs = sum(item.get("functions", 0) for item in code_stats)
+            total_funcs = sum(item.get("total_functions", 0) for item in code_stats)
+            metrics["matched_code"] = matched
+            metrics["total_code"] = total
+            metrics["matched_code_percent"] = matched / total * 100 if total else None
+            if total_funcs:
+                metrics["exact_functions"] = funcs
+                metrics["total_functions"] = total_funcs
     return metrics
 
 
@@ -1131,9 +1188,17 @@ def collect_patch_paths(repo: Path, patch_dir: Path | None, patches: list[Path] 
     found = []
     if patch_dir:
         resolved_dir = resolve_repo_path(repo, patch_dir)
+        if not resolved_dir.exists():
+            raise SystemExit(f"patch dir not found: {resolved_dir}")
+        if not resolved_dir.is_dir():
+            raise SystemExit(f"patch dir is not a directory: {resolved_dir}")
         found.extend(sorted(path for path in resolved_dir.iterdir() if path.suffix in {".patch", ".diff"}))
     if patches:
-        found.extend(resolve_repo_path(repo, patch) for patch in patches)
+        for patch in patches:
+            resolved_patch = resolve_repo_path(repo, patch)
+            if not resolved_patch.exists():
+                raise SystemExit(f"patch file not found: {resolved_patch}")
+            found.append(resolved_patch)
     unique = []
     seen = set()
     for path in found:
@@ -1167,11 +1232,15 @@ def run_variant_batch(
     initial_dirty = git_status_short(repo)
     if initial_dirty and not allow_dirty:
         raise SystemExit("worktree is dirty; commit/stash/revert before running variants, or pass --allow-dirty")
-    initial_fingerprint = worktree_fingerprint(repo)
-
     history_before = load_history(state_dir)
     unit_history = [record for record in history_before if unit is None or record.get("unit") == unit]
     baseline = best_record(unit_history)
+    baseline_source = "history"
+    if baseline is None:
+        baseline = execute_harness(repo, unit)
+        baseline_source = "fresh"
+        write_run_record(baseline, state_dir)
+    initial_fingerprint = worktree_fingerprint(repo)
     best_variant: dict[str, Any] | None = None
     results = []
     for patch in patch_paths:
@@ -1235,6 +1304,7 @@ def run_variant_batch(
         "repo": str(repo),
         "unit": unit,
         "baseline": metric_tuple(baseline),
+        "baseline_source": baseline_source,
         "tested": len(results),
         "best_patch": str(best_variant["patch"]) if best_variant else None,
         "kept_patch": kept,
@@ -1251,7 +1321,7 @@ def build_gap_report(repo: Path, state_dir: Path) -> dict[str, Any]:
     commands = config.get("commands", {})
     missing_original_input = adapter == "dtk" and not info.get("dtk", {}).get("has_original_input")
     dtk_ready = adapter == "dtk" and bool(info.get("dtk", {}).get("configure_py"))
-    generic_ready = adapter == "generic" and bool(commands.get("score") or commands.get("build"))
+    generic_ready = adapter == "generic" and bool(commands.get("score"))
     oracle_status = "external" if missing_original_input else ("covered" if dtk_ready or generic_ready else "open")
     has_diff_oracle = bool(commands.get("diff") or info.get("dtk", {}).get("objdiff_json"))
     if has_diff_oracle:
@@ -1259,16 +1329,24 @@ def build_gap_report(repo: Path, state_dir: Path) -> dict[str, Any]:
     elif missing_original_input:
         diff_status = "external"
     else:
-        diff_status = "ready" if oracle_status != "open" else "open"
+        diff_status = "open"
     oracle_why = (
         "A DTK-style project is detected, but the local legal original input is missing, so the real build/diff oracle cannot execute yet."
         if oracle_status == "external"
-        else "The harness can run configure/build/score and persist JSON run records."
+        else (
+            "The harness can run configure/build/score and persist JSON run records."
+            if oracle_status == "covered"
+            else "The repo does not expose a score oracle the harness can use to prove matching progress."
+        )
     )
     diff_why = (
         "Project diff metadata depends on the original-input-backed build, which is not available in this worktree yet."
         if diff_status == "external"
-        else "`lead` classifies text diffs and can ingest structured objdiff/asm-differ-style JSON with `--diff-json`."
+        else (
+            "`lead` can read a configured diff command, repo `objdiff.json`, or explicit `--diff-json` / `--diff-file` input."
+            if diff_status == "covered"
+            else "No repo-native diff source is configured, so `lead --repo ...` needs an explicit diff file or JSON export."
+        )
     )
     gaps = [
         {
@@ -1281,7 +1359,7 @@ def build_gap_report(repo: Path, state_dir: Path) -> dict[str, Any]:
                 else (
                     "Provide legal original inputs, then run the project setup/build so the DTK oracle can execute."
                     if oracle_status == "external"
-                    else "Add `decomp-goal.toml` commands or use a DTK-style project with `configure.py`."
+                    else "Add a `[commands].score` oracle or use a DTK-style project with `configure.py`."
                 )
             ),
         },
@@ -1622,6 +1700,10 @@ def get_diff_text(
 
     config = load_config(repo)
     command = config.get("commands", {}).get("diff")
+    dtk_objdiff = repo / "objdiff.json"
+    if not command and dtk_objdiff.exists():
+        structured = parse_structured_diff(dtk_objdiff, "objdiff")
+        return structured["text"], None, structured
     if not command:
         return None, "diff_command_missing", None
     unit = unit or config.get("project", {}).get("default_unit")
@@ -2328,10 +2410,10 @@ def main(argv: list[str] | None = None) -> int:
         print(render_goal(args.repo, args.unit, args.name, args.issue).strip())
         return 0
     if args.command == "run":
-        state_dir = args.state_dir.resolve() if args.state_dir else default_state_dir(args.repo)
+        state_dir = repo_relative_or_default(args.repo, args.state_dir, default_state_dir(args.repo))
         return run_harness(args.repo, args.unit, state_dir, args.json)
     if args.command == "history":
-        state_dir = args.state_dir.resolve() if args.state_dir else default_state_dir(args.repo)
+        state_dir = repo_relative_or_default(args.repo, args.state_dir, default_state_dir(args.repo))
         records = load_history(state_dir)
         if args.json:
             print(json.dumps({"summary": summarize_history(records), "runs": records}, indent=2))
@@ -2339,7 +2421,7 @@ def main(argv: list[str] | None = None) -> int:
             print_history(records)
         return 0
     if args.command == "checkpoint":
-        state_dir = args.state_dir.resolve() if args.state_dir else default_state_dir(args.repo)
+        state_dir = repo_relative_or_default(args.repo, args.state_dir, default_state_dir(args.repo))
         report = build_checkpoint_report(args.repo, load_history(state_dir))
         if args.commit:
             if not report["commit_allowed"]:
@@ -2358,7 +2440,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(report["commit"]["stdout"])
         return 0
     if args.command == "coach":
-        state_dir = args.state_dir.resolve() if args.state_dir else default_state_dir(args.repo)
+        state_dir = repo_relative_or_default(args.repo, args.state_dir, default_state_dir(args.repo))
         report = coach_history(load_history(state_dir), args.min_runs, args.plateau_runs)
         if args.json:
             print(json.dumps(report, indent=2))
@@ -2386,7 +2468,7 @@ def main(argv: list[str] | None = None) -> int:
             optional_repo_path(args.repo, args.diff_json),
             args.diff_format,
         )
-        out = args.out.resolve() if args.out else default_experiments_path(args.repo, args.unit)
+        out = repo_relative_or_default(args.repo, args.out, default_experiments_path(args.repo, args.unit))
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(render_experiments(args.repo, args.unit, lead), encoding="utf-8")
         result = {"path": str(out), "lead": lead}
@@ -2396,7 +2478,7 @@ def main(argv: list[str] | None = None) -> int:
             print(out)
         return 0
     if args.command == "variants":
-        state_dir = args.state_dir.resolve() if args.state_dir else default_state_dir(args.repo)
+        state_dir = repo_relative_or_default(args.repo, args.state_dir, default_state_dir(args.repo))
         patch_paths = collect_patch_paths(args.repo, args.patch_dir, args.patch)
         report = run_variant_batch(
             args.repo,
@@ -2478,7 +2560,7 @@ def main(argv: list[str] | None = None) -> int:
             print_decompiler_report(report)
         return 0
     if args.command == "gaps":
-        state_dir = args.state_dir.resolve() if args.state_dir else default_state_dir(args.repo)
+        state_dir = repo_relative_or_default(args.repo, args.state_dir, default_state_dir(args.repo))
         report = build_gap_report(args.repo, state_dir)
         if args.json:
             print(json.dumps(report, indent=2))
@@ -2486,8 +2568,9 @@ def main(argv: list[str] | None = None) -> int:
             print_gap_report(report)
         return 0
     if args.command == "monitor":
-        state_dir = args.state_dir.resolve() if args.state_dir else default_state_dir(args.repo)
-        dashboard_out = args.dashboard_out.resolve() if args.dashboard_out else None
+        state_dir = repo_relative_or_default(args.repo, args.state_dir, default_state_dir(args.repo))
+        dashboard_out = optional_repo_path(args.repo, args.dashboard_out)
+        dashboard_out = dashboard_out.resolve() if dashboard_out else None
         return run_monitor(
             args.repo,
             state_dir,
@@ -2499,8 +2582,8 @@ def main(argv: list[str] | None = None) -> int:
             args.json,
         )
     if args.command == "dashboard":
-        state_dir = args.state_dir.resolve() if args.state_dir else default_state_dir(args.repo)
-        out = args.out.resolve() if args.out else default_dashboard_path(args.repo)
+        state_dir = repo_relative_or_default(args.repo, args.state_dir, default_state_dir(args.repo))
+        out = repo_relative_or_default(args.repo, args.out, default_dashboard_path(args.repo))
         records = load_history(state_dir)
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(generate_dashboard(records, args.title), encoding="utf-8")

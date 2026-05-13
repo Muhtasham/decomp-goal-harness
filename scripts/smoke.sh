@@ -13,6 +13,11 @@ if ! command -v uv >/dev/null 2>&1; then
   exit 1
 fi
 
+if ! command -v cc >/dev/null 2>&1; then
+  echo "cc is required for the toy matching oracle" >&2
+  exit 1
+fi
+
 uv run --project "$ROOT" python -m compileall "$ROOT/src" "$ROOT/examples/toy_match/score.py" >/dev/null
 uv run --project "$ROOT" decomp-goal inspect --repo "$ROOT" --json >/dev/null
 uv run --project "$ROOT" decomp-goal gaps --repo "$ROOT" --state-dir "$STATE_DIR" --json >/dev/null
@@ -37,6 +42,19 @@ VARIANT_STATE="$STATE_DIR/variants"
 mkdir -p "$VARIANT_STATE"
 uv run --project "$ROOT" decomp-goal run --repo "$ROOT/examples/toy_match" --unit attempt.start.c --state-dir "$VARIANT_STATE" --json >/dev/null || true
 uv run --project "$ROOT" decomp-goal variants --repo "$ROOT/examples/toy_match" --unit attempt.start.c --state-dir "$VARIANT_STATE" --patch-dir "$ROOT/examples/toy_match/variants" --allow-dirty --json >/dev/null
+if uv run --project "$ROOT" decomp-goal variants --repo "$ROOT/examples/toy_match" --unit attempt.c --state-dir "$STATE_DIR/bad-patch-dir" --patch-dir does-not-exist --json >/dev/null 2>&1; then
+  echo "expected missing patch dir to fail" >&2
+  exit 1
+fi
+cat >"$STATE_DIR/worse.patch" <<'PATCH'
+--- a/attempt.c
++++ b/attempt.c
+@@ -5 +5 @@
+-    int score = room * 17 + keys * 9;
++    int score = room * 18 + keys * 9;
+PATCH
+uv run --project "$ROOT" decomp-goal variants --repo "$ROOT/examples/toy_match" --unit attempt.c --state-dir "$STATE_DIR/empty-variants" --patch "$STATE_DIR/worse.patch" --keep-best --allow-dirty --json >/dev/null
+git -C "$ROOT" diff --exit-code -- examples/toy_match/attempt.c >/dev/null
 uv run --project "$ROOT" decomp-goal steer --repo "$ROOT/examples/toy_match" --unit attempt.start.c --source smoke --text "branch condition lead" --leads-dir "$LEADS_DIR" --json >/dev/null
 uv run --project "$ROOT" decomp-goal steer --repo "$ROOT/examples/toy_match" --leads-dir "$LEADS_DIR" --json >/dev/null
 uv run --project "$ROOT" decomp-goal decompilers --repo "$ROOT/examples/toy_match" --unit attempt.start.c --function score_room --source ghidra --file "$ROOT/examples/toy_match/decompiler-ghidra.txt" --notes "branch and constant shape agree" --confidence high --decompiler-dir "$DECOMPILER_DIR" --leads-dir "$LEADS_DIR" --json >/dev/null
@@ -44,9 +62,33 @@ uv run --project "$ROOT" decomp-goal decompilers --repo "$ROOT/examples/toy_matc
 uv run --project "$ROOT" decomp-goal gaps --repo "$ROOT/examples/toy_match" --state-dir "$STATE_DIR" --json >/dev/null
 uv run --project "$ROOT" decomp-goal monitor --repo "$ROOT/examples/toy_match" --unit attempt.start.c --state-dir "$STATE_DIR" --dashboard-out "$STATE_DIR/monitor.html" --max-ticks 1 --json >/dev/null
 test -s "$STATE_DIR/monitor.html"
+uv run --project "$ROOT" decomp-goal monitor --repo "$ROOT/examples/toy_match" --unit attempt.start.c --state-dir "$STATE_DIR" --dashboard-out .decomp-goal/smoke-monitor.html --max-ticks 1 --json >/dev/null
+test -s "$ROOT/examples/toy_match/.decomp-goal/smoke-monitor.html"
 uv run --project "$ROOT" decomp-goal codex --repo "$ROOT/examples/toy_match" --unit attempt.c --mode exec --reasoning-effort high --prompt-file "$PROMPT_FILE" --leads-dir "$LEADS_DIR" --json >/dev/null
 test -s "$PROMPT_FILE"
+uv run --project "$ROOT" decomp-goal experiments --repo "$ROOT/examples/toy_match" --unit attempt.start.c --out .decomp-goal/smoke-experiments.md --json >/dev/null
+test -s "$ROOT/examples/toy_match/.decomp-goal/smoke-experiments.md"
 uv run --project "$ROOT" decomp-goal dashboard --repo "$ROOT/examples/toy_match" --state-dir "$STATE_DIR" --out "$STATE_DIR/dashboard.html" >/dev/null
 test -s "$STATE_DIR/dashboard.html"
+uv run --project "$ROOT" decomp-goal dashboard --repo "$ROOT/examples/toy_match" --state-dir "$STATE_DIR" --out .decomp-goal/smoke-dashboard.html >/dev/null
+test -s "$ROOT/examples/toy_match/.decomp-goal/smoke-dashboard.html"
+rm -rf "$ROOT/examples/toy_match/.decomp-goal"
+
+BUILD_ONLY="$STATE_DIR/build_only"
+cp -R "$ROOT/examples/toy_match" "$BUILD_ONLY"
+cat >"$BUILD_ONLY/decomp-goal.toml" <<'TOML'
+[project]
+name = "build-only"
+adapter = "generic"
+default_unit = "attempt.c"
+
+[commands]
+build = "true"
+TOML
+if uv run --project "$ROOT" decomp-goal run --repo "$BUILD_ONLY" --unit attempt.c --state-dir "$STATE_DIR/build-only-runs" --json >"$STATE_DIR/build-only-run.json"; then
+  echo "expected build-only config to fail without score command" >&2
+  exit 1
+fi
+grep -q "missing_score_command" "$STATE_DIR/build-only-run.json"
 
 echo "smoke ok"

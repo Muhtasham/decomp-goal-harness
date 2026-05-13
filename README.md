@@ -27,6 +27,8 @@ Or run without installing:
 uv run decomp-goal --help
 ```
 
+The source-checkout toy demo also needs a local C compiler available as `cc`.
+
 ## Development checks
 
 The repo uses Ruff for linting/formatting, ty for type checking, and pre-commit for local hooks.
@@ -225,9 +227,9 @@ adapter = "generic"
 default_unit = "attempt.c"
 
 [commands]
-build = "uv run --project ../.. python score.py --candidate {unit} --build-only"
-score = "uv run --project ../.. python score.py --candidate {unit} --json"
-diff = "uv run --project ../.. python score.py --candidate {unit} --diff"
+build = "uv run --project ../.. python3 score.py --candidate {unit} --build-only"
+score = "uv run --project ../.. python3 score.py --candidate {unit} --json"
+diff = "uv run --project ../.. python3 score.py --candidate {unit} --diff"
 ```
 
 The score command should print JSON with at least:
@@ -255,7 +257,7 @@ The harness does not fetch or create original game inputs. If a project requires
 
 ## Toy demo
 
-`examples/toy_match` is a copyright-clean mini matching project. It compiles `original.c` and a candidate C file with fixed flags, compares the generated object bytes, and reports exact/fuzzy score.
+`examples/toy_match` is a copyright-clean mini matching project for source checkouts of this repo. It compiles `original.c` and a candidate C file with fixed flags, compares the generated object bytes, and reports exact/fuzzy score.
 
 Exact match:
 
