@@ -22,3 +22,9 @@ repos:
         pass_filenames: false
         always_run: true
         types_or: [python, pyi]
+      - id: pytest
+        name: pytest
+        entry: uv run pytest
+        language: system
+        pass_filenames: false
+        always_run: true

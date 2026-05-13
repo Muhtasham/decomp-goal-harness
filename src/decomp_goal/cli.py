@@ -193,6 +193,10 @@ def default_dashboard_path(repo: Path) -> Path:
     return git_path(repo, "decomp-goal/dashboard.html") or (repo / ".decomp-goal" / "dashboard.html").resolve()
 
 
+def default_goal_html_path(repo: Path) -> Path:
+    return git_path(repo, "decomp-goal/goal.html") or (repo / ".decomp-goal" / "goal.html").resolve()
+
+
 def default_prompt_path(repo: Path) -> Path:
     return git_path(repo, "decomp-goal/goal.txt") or (repo / ".decomp-goal" / "goal.txt").resolve()
 
@@ -515,6 +519,51 @@ def rank_targets(repo: Path, targets: list[dict[str, Any]]) -> list[dict[str, An
         ranked.append(ranked_target)
     ranked.sort(key=lambda item: (item.get("rank_score", 9999), item.get("path", "")))
     return ranked
+
+
+def build_pick_report(repo: Path, limit: int, query: str | None) -> dict[str, Any]:
+    targets = list_targets(repo, None, query, ranked=True)
+    picks = []
+    for target in targets[:limit]:
+        unit = str(target.get("path") or "")
+        goal_command = " ".join(
+            shlex.quote(part)
+            for part in [
+                "decomp-goal",
+                "goal",
+                "--repo",
+                str(repo),
+                "--unit",
+                unit,
+            ]
+        )
+        picks.append(
+            {
+                "unit": unit,
+                "status": target.get("status"),
+                "kind": target.get("kind"),
+                "rank_score": target.get("rank_score"),
+                "rank_reasons": target.get("rank_reasons", []),
+                "source": target.get("source"),
+                "goal_command": goal_command,
+            }
+        )
+    return {
+        "repo": str(repo),
+        "query": query,
+        "picks": picks,
+    }
+
+
+def print_pick_report(report: dict[str, Any]) -> None:
+    if not report["picks"]:
+        print("no picks found")
+        return
+    for idx, pick in enumerate(report["picks"], 1):
+        reasons = "; ".join(pick.get("rank_reasons") or []) or "configured target"
+        print(f"{idx}. {pick['unit']} score={pick.get('rank_score')} kind={pick.get('kind')}")
+        print(f"   reason: {reasons}")
+        print(f"   goal: {pick['goal_command']}")
 
 
 def write_steering_lead(repo: Path, unit: str | None, source: str, text: str, leads_dir: Path | None = None) -> Path:
@@ -1451,6 +1500,111 @@ def print_gap_report(report: dict[str, Any]) -> None:
         print(f"  next: {item['next']}")
 
 
+def build_doctor_report(repo: Path) -> dict[str, Any]:
+    config = load_config(repo)
+    adapter = detect_adapter(repo, config)
+    info = inspect_repo(repo)
+    commands = config.get("commands", {})
+    checks = []
+
+    def add(name: str, status: str, detail: str, fix: str | None = None) -> None:
+        checks.append({"name": name, "status": status, "detail": detail, "fix": fix if status != "ok" else None})
+
+    for tool in ["git", "python3"]:
+        path = info.get("tools", {}).get(tool)
+        add(
+            f"tool:{tool}", "ok" if path else "fail", str(path or "missing"), f"Install `{tool}`." if not path else None
+        )
+
+    if adapter == "generic":
+        add(
+            "config",
+            "ok" if info.get("generic", {}).get("config") else "fail",
+            "decomp-goal.toml present" if info.get("generic", {}).get("config") else "decomp-goal.toml missing",
+            "Add a `decomp-goal.toml` with at least `[commands].score`.",
+        )
+        add(
+            "score oracle",
+            "ok" if commands.get("score") else "fail",
+            "[commands].score present" if commands.get("score") else "[commands].score missing",
+            "Add a score command that prints JSON with `matched` and progress metrics.",
+        )
+        add(
+            "diff oracle",
+            "ok" if commands.get("diff") else "warn",
+            "[commands].diff present" if commands.get("diff") else "lead needs --diff-file/--diff-json without it",
+            "Add `[commands].diff` if the repo can produce text diffs cheaply.",
+        )
+        if commands and not info.get("tools", {}).get("cc"):
+            add("tool:cc", "warn", "cc missing", "Install a C compiler if this repo's oracle compiles C/C++.")
+    else:
+        add(
+            "dtk project",
+            "ok" if info.get("dtk", {}).get("configure_py") else "fail",
+            "configure.py present" if info.get("dtk", {}).get("configure_py") else "configure.py missing",
+            "Run doctor from the DTK/ZeldaRET repo root.",
+        )
+        add(
+            "tool:ninja",
+            "ok" if info.get("tools", {}).get("ninja") else "fail",
+            str(info.get("tools", {}).get("ninja") or "missing"),
+            "Install ninja so DTK builds can run.",
+        )
+        add(
+            "original input",
+            "ok" if info.get("dtk", {}).get("has_original_input") else "external",
+            (
+                "original input present"
+                if info.get("dtk", {}).get("has_original_input")
+                else f"missing {info.get('dtk', {}).get('expected_rels_arc')}"
+            ),
+            "Provide legally obtained original inputs and run the project setup.",
+        )
+        add(
+            "objdiff metadata",
+            "ok" if info.get("dtk", {}).get("objdiff_json") else "warn",
+            "objdiff.json present" if info.get("dtk", {}).get("objdiff_json") else "objdiff.json missing",
+            "Build/configure once after original input is present so objdiff metadata can be generated.",
+        )
+
+    if shutil.which("gh"):
+        add("tool:gh", "ok", str(shutil.which("gh")))
+    else:
+        add("tool:gh", "warn", "missing", "Install GitHub CLI only if you want issue discovery.")
+
+    for name, command in commands.items():
+        status = "ok" if isinstance(command, str) and command.strip() else "fail"
+        add(
+            f"toml command:{name}",
+            status,
+            "non-empty string" if status == "ok" else "command must be a non-empty string",
+            "Fix the command value in `decomp-goal.toml`.",
+        )
+
+    if any(check["status"] == "fail" for check in checks) or any(check["status"] == "external" for check in checks):
+        overall = "blocked"
+    elif any(check["status"] == "warn" for check in checks):
+        overall = "warn"
+    else:
+        overall = "ok"
+    return {
+        "repo": str(repo),
+        "adapter": adapter,
+        "overall": overall,
+        "checks": checks,
+    }
+
+
+def print_doctor_report(report: dict[str, Any]) -> None:
+    print(f"repo: {report['repo']}")
+    print(f"adapter: {report['adapter']}")
+    print(f"overall: {report['overall']}")
+    for check in report["checks"]:
+        print(f"- {check['name']} [{check['status']}]: {check['detail']}")
+        if check.get("fix"):
+            print(f"  fix: {check['fix']}")
+
+
 def generate_dashboard(records: list[dict[str, Any]], title: str) -> str:
     summary = summarize_history(records)
     last_metrics = (records[-1].get("_metrics") or {}) if records else {}
@@ -1535,10 +1689,115 @@ def generate_dashboard(records: list[dict[str, Any]], title: str) -> str:
 """
 
 
+def generate_goal_html(
+    repo: Path,
+    state_dir: Path,
+    unit: str | None,
+    title: str,
+    leads_dir: Path | None = None,
+) -> str:
+    records = load_history(state_dir)
+    summary = summarize_history(records)
+    coach = coach_history(records, min_runs=3, plateau_runs=3)
+    leads = load_steering_leads(repo, 5, leads_dir)
+    goal = render_goal(repo, unit, title, None, leads_dir)
+    points = []
+    for idx, record in enumerate(records):
+        metrics = record.get("_metrics") or {}
+        points.append(
+            {
+                "idx": idx,
+                "head": (record.get("git") or {}).get("head"),
+                "code": metrics.get("matched_code_percent"),
+                "fuzzy": metrics.get("fuzzy_percent"),
+                "exact": exact_percent_from_metrics(metrics),
+            }
+        )
+    chart = render_svg_chart(points)
+    last = records[-1] if records else {}
+    last_metrics = last.get("_metrics") or {}
+    lead_items = "\n".join(
+        f"<li><strong>{html_lib.escape(lead['source'])}</strong> {html_lib.escape(lead['unit'])}<br><pre>{html_lib.escape(lead['text'][:1200])}</pre></li>"
+        for lead in leads
+    )
+    advice_items = "\n".join(f"<li>{html_lib.escape(item)}</li>" for item in coach.get("advice", []))
+    run_rows = "\n".join(
+        f"<tr><td>{html_lib.escape(str(record.get('created_at') or '-'))}</td><td>{html_lib.escape(str((record.get('git') or {}).get('head') or '-'))}</td><td>{fmt_exact(record)}</td><td>{fmt_pct((record.get('_metrics') or {}).get('matched_code_percent'))}</td><td>{fmt_pct((record.get('_metrics') or {}).get('fuzzy_percent'))}</td><td>{html_lib.escape(str(record.get('blocker') or ('matched' if record.get('matched') else '-')))}</td></tr>"
+        for record in reversed(records[-20:])
+    )
+    dirty = git_info(repo).get("dirty") == "true"
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{html_lib.escape(title)} Goal</title>
+  <style>
+    body {{ margin: 0; font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #20232d; background: #f7f5ef; }}
+    main {{ max-width: 1220px; margin: 0 auto; padding: 24px; }}
+    h1 {{ margin: 0; font-size: 30px; }}
+    h2 {{ margin: 24px 0 10px; font-size: 18px; }}
+    .meta {{ color: #68707d; margin-top: 6px; }}
+    .grid {{ display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-top: 18px; }}
+    .card, .panel {{ background: #fff; border: 1px solid #d9d5ca; border-radius: 8px; padding: 16px; }}
+    .label {{ color: #68707d; font-size: 12px; font-weight: 700; text-transform: uppercase; }}
+    .value {{ font-size: 30px; font-weight: 800; margin-top: 4px; }}
+    pre {{ white-space: pre-wrap; overflow-wrap: anywhere; background: #f2efe8; padding: 10px; border-radius: 6px; }}
+    table {{ width: 100%; border-collapse: collapse; background: #fff; }}
+    th, td {{ text-align: left; padding: 9px 10px; border-bottom: 1px solid #e8e3d8; vertical-align: top; }}
+    th {{ color: #68707d; font-size: 12px; text-transform: uppercase; }}
+    @media (max-width: 850px) {{ .grid {{ grid-template-columns: 1fr 1fr; }} }}
+  </style>
+</head>
+<body>
+<main>
+  <h1>{html_lib.escape(title)}</h1>
+  <div class="meta">Repo: {html_lib.escape(str(repo))} · Unit: {html_lib.escape(unit or "-")} · Updated: {html_lib.escape(datetime.now(timezone.utc).isoformat())}</div>
+  <section class="grid">
+    <div class="card"><div class="label">Exact Functions</div><div class="value">{fmt_exact(last if records else None)}</div></div>
+    <div class="card"><div class="label">Matched Code</div><div class="value">{fmt_pct(last_metrics.get("matched_code_percent"))}</div></div>
+    <div class="card"><div class="label">Fuzzy</div><div class="value">{fmt_pct(last_metrics.get("fuzzy_percent"))}</div></div>
+    <div class="card"><div class="label">Worktree</div><div class="value">{"dirty" if dirty else "clean"}</div></div>
+  </section>
+  <section class="panel">
+    <h2>Progress</h2>
+    {chart}
+  </section>
+  <section class="panel">
+    <h2>Goal</h2>
+    <pre>{html_lib.escape(goal.strip())}</pre>
+  </section>
+  <section class="panel">
+    <h2>Coach</h2>
+    <div>Status: <strong>{html_lib.escape(str(coach.get("status")))}</strong> · runs: {summary.get("runs", 0)} · last progress: {html_lib.escape(str(summary.get("last_progress") or "-"))}</div>
+    <ul>{advice_items}</ul>
+  </section>
+  <section class="panel">
+    <h2>Recent Steering Leads</h2>
+    <ul>{lead_items or "<li>No steering leads recorded.</li>"}</ul>
+  </section>
+  <section class="panel">
+    <h2>Recent Runs</h2>
+    <table><thead><tr><th>Time</th><th>Head</th><th>Exact</th><th>Code</th><th>Fuzzy</th><th>Status</th></tr></thead><tbody>{run_rows}</tbody></table>
+  </section>
+</main>
+</body>
+</html>
+"""
+
+
 def fmt_pct(value: Any) -> str:
     if value is None:
         return "-"
     return f"{float(value):.2f}%"
+
+
+def exact_percent_from_metrics(metrics: dict[str, Any]) -> float | None:
+    exact = metrics.get("exact_functions")
+    total = metrics.get("total_functions")
+    if not isinstance(exact, (int, float)) or not isinstance(total, (int, float)) or total == 0:
+        return None
+    return exact / total * 100
 
 
 def fmt_exact(record: dict[str, Any] | None) -> str:
@@ -2021,6 +2280,7 @@ def monitor_once(
     state_dir: Path,
     unit: str | None,
     dashboard_out: Path | None,
+    goal_html_out: Path | None,
     title: str,
 ) -> dict[str, Any]:
     records = load_history(state_dir)
@@ -2030,6 +2290,11 @@ def monitor_once(
         dashboard_out.parent.mkdir(parents=True, exist_ok=True)
         dashboard_out.write_text(generate_dashboard(records, title), encoding="utf-8")
         dashboard_path = str(dashboard_out)
+    goal_html_path = None
+    if goal_html_out:
+        goal_html_out.parent.mkdir(parents=True, exist_ok=True)
+        goal_html_out.write_text(generate_goal_html(repo, state_dir, unit, title), encoding="utf-8")
+        goal_html_path = str(goal_html_out)
     prompt_path = None
     if coach["status"] in {"plateau", "last_mile", "last_mile_plateau", "blocked"}:
         path = default_monitor_path(repo)
@@ -2041,6 +2306,7 @@ def monitor_once(
         "unit": unit,
         "coach": coach,
         "dashboard": dashboard_path,
+        "goal_html": goal_html_path,
         "steering_prompt": prompt_path,
     }
 
@@ -2050,6 +2316,7 @@ def run_monitor(
     state_dir: Path,
     unit: str | None,
     dashboard_out: Path | None,
+    goal_html_out: Path | None,
     title: str,
     interval_seconds: int,
     max_ticks: int,
@@ -2057,13 +2324,13 @@ def run_monitor(
 ) -> int:
     reports = []
     for tick in range(max(1, max_ticks)):
-        report = monitor_once(repo, state_dir, unit, dashboard_out, title)
+        report = monitor_once(repo, state_dir, unit, dashboard_out, goal_html_out, title)
         report["tick"] = tick + 1
         reports.append(report)
         if not json_output:
             coach = report["coach"]
             print(
-                f"tick={tick + 1} status={coach['status']} dashboard={report.get('dashboard') or '-'} steering={report.get('steering_prompt') or '-'}"
+                f"tick={tick + 1} status={coach['status']} dashboard={report.get('dashboard') or '-'} goal_html={report.get('goal_html') or '-'} steering={report.get('steering_prompt') or '-'}"
             )
         if tick + 1 < max_ticks:
             time.sleep(interval_seconds)
@@ -2228,11 +2495,21 @@ def main(argv: list[str] | None = None) -> int:
     targets_p.add_argument("--rank", action="store_true")
     targets_p.add_argument("--json", action="store_true")
 
+    pick_p = sub.add_parser("pick", help="Rank agent-sized decomp targets and print goal commands")
+    pick_p.add_argument("--repo", type=repo_path, default=Path.cwd())
+    pick_p.add_argument("--limit", type=int, default=10)
+    pick_p.add_argument("--query")
+    pick_p.add_argument("--json", action="store_true")
+
     goal_p = sub.add_parser("goal", help="Render a /goal prompt packet")
     goal_p.add_argument("--repo", type=repo_path, default=Path.cwd())
     goal_p.add_argument("--unit")
     goal_p.add_argument("--name")
     goal_p.add_argument("--issue")
+
+    doctor_p = sub.add_parser("doctor", help="Check local setup blockers before a long decomp goal")
+    doctor_p.add_argument("--repo", type=repo_path, default=Path.cwd())
+    doctor_p.add_argument("--json", action="store_true")
 
     run_p = sub.add_parser("run", help="Run configure/build/score once")
     run_p.add_argument("--repo", type=repo_path, default=Path.cwd())
@@ -2340,10 +2617,18 @@ def main(argv: list[str] | None = None) -> int:
     monitor_p.add_argument("--unit")
     monitor_p.add_argument("--state-dir", type=Path)
     monitor_p.add_argument("--dashboard-out", type=Path)
+    monitor_p.add_argument("--goal-html", type=Path)
     monitor_p.add_argument("--title", default="Decomp Goal Progress")
     monitor_p.add_argument("--interval", type=int, default=300)
     monitor_p.add_argument("--max-ticks", type=int, default=1)
     monitor_p.add_argument("--json", action="store_true")
+
+    goal_html_p = sub.add_parser("goal-html", help="Generate a live goal.html progress page")
+    goal_html_p.add_argument("--repo", type=repo_path, default=Path.cwd())
+    goal_html_p.add_argument("--unit")
+    goal_html_p.add_argument("--state-dir", type=Path)
+    goal_html_p.add_argument("--out", type=Path)
+    goal_html_p.add_argument("--title", default="Decomp Goal Progress")
 
     dashboard_p = sub.add_parser("dashboard", help="Generate a local HTML progress dashboard")
     dashboard_p.add_argument("--repo", type=repo_path, default=Path.cwd())
@@ -2406,9 +2691,23 @@ def main(argv: list[str] | None = None) -> int:
                 rank = f" score={target.get('rank_score')}" if args.rank else ""
                 print(f"{target.get('status', ''):12} {target.get('path')} {target.get('line', '')} {kind}{rank}")
         return 0
+    if args.command == "pick":
+        report = build_pick_report(args.repo, args.limit, args.query)
+        if args.json:
+            print(json.dumps(report, indent=2))
+        else:
+            print_pick_report(report)
+        return 0
     if args.command == "goal":
         print(render_goal(args.repo, args.unit, args.name, args.issue).strip())
         return 0
+    if args.command == "doctor":
+        report = build_doctor_report(args.repo)
+        if args.json:
+            print(json.dumps(report, indent=2))
+        else:
+            print_doctor_report(report)
+        return 0 if report["overall"] in {"ok", "warn"} else 1
     if args.command == "run":
         state_dir = repo_relative_or_default(args.repo, args.state_dir, default_state_dir(args.repo))
         return run_harness(args.repo, args.unit, state_dir, args.json)
@@ -2571,16 +2870,26 @@ def main(argv: list[str] | None = None) -> int:
         state_dir = repo_relative_or_default(args.repo, args.state_dir, default_state_dir(args.repo))
         dashboard_out = optional_repo_path(args.repo, args.dashboard_out)
         dashboard_out = dashboard_out.resolve() if dashboard_out else None
+        goal_html_out = optional_repo_path(args.repo, args.goal_html)
+        goal_html_out = goal_html_out.resolve() if goal_html_out else None
         return run_monitor(
             args.repo,
             state_dir,
             args.unit,
             dashboard_out,
+            goal_html_out,
             args.title,
             args.interval,
             args.max_ticks,
             args.json,
         )
+    if args.command == "goal-html":
+        state_dir = repo_relative_or_default(args.repo, args.state_dir, default_state_dir(args.repo))
+        out = repo_relative_or_default(args.repo, args.out, default_goal_html_path(args.repo))
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(generate_goal_html(args.repo, state_dir, args.unit, args.title), encoding="utf-8")
+        print(out)
+        return 0
     if args.command == "dashboard":
         state_dir = repo_relative_or_default(args.repo, args.state_dir, default_state_dir(args.repo))
         out = repo_relative_or_default(args.repo, args.out, default_dashboard_path(args.repo))

@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="620" viewBox="0 0 1120 620" role="img" aria-labelledby="title desc">
+  <title id="title">decomp-goal-harness demo flow</title>
+  <desc id="desc">A static screenshot-style demo showing pick, goal, run, and dashboard commands.</desc>
+  <rect width="1120" height="620" fill="#f7f5ef"/>
+  <text x="48" y="64" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif" font-size="34" font-weight="800" fill="#20232d">decomp-goal-harness</text>
+  <text x="48" y="96" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif" font-size="16" fill="#66707c">Pick a target, generate the goal, run the oracle, publish progress.</text>
+
+  <g transform="translate(48,132)">
+    <rect width="480" height="376" rx="8" fill="#171b22"/>
+    <text x="24" y="38" font-family="SFMono-Regular,Consolas,monospace" font-size="15" fill="#8fe388">$ decomp-goal pick --repo /work/tww --limit 3</text>
+    <text x="24" y="74" font-family="SFMono-Regular,Consolas,monospace" font-size="14" fill="#d8dee9">1. src/d/actor/d_a_obj_mmrr.cpp score=12</text>
+    <text x="24" y="98" font-family="SFMono-Regular,Consolas,monospace" font-size="14" fill="#b8c0cc">   reason: 94 source lines; actor rel target</text>
+    <text x="24" y="132" font-family="SFMono-Regular,Consolas,monospace" font-size="15" fill="#8fe388">$ decomp-goal goal --repo /work/tww --unit src/d/actor/d_a_obj_mmrr.cpp</text>
+    <text x="24" y="168" font-family="SFMono-Regular,Consolas,monospace" font-size="14" fill="#d8dee9">Get `src/d/actor/d_a_obj_mmrr.cpp` to 100% matching...</text>
+    <text x="24" y="202" font-family="SFMono-Regular,Consolas,monospace" font-size="15" fill="#8fe388">$ decomp-goal run --repo /work/tww --unit src/d/actor/d_a_obj_mmrr.cpp</text>
+    <text x="24" y="238" font-family="SFMono-Regular,Consolas,monospace" font-size="14" fill="#d8dee9">matched: false</text>
+    <text x="24" y="262" font-family="SFMono-Regular,Consolas,monospace" font-size="14" fill="#d8dee9">code: 82.41%  fuzzy: 99.14%</text>
+    <text x="24" y="296" font-family="SFMono-Regular,Consolas,monospace" font-size="15" fill="#8fe388">$ decomp-goal goal-html --repo /work/tww --unit src/d/actor/d_a_obj_mmrr.cpp</text>
+    <text x="24" y="332" font-family="SFMono-Regular,Consolas,monospace" font-size="14" fill="#d8dee9">/work/tww/.git/decomp-goal/goal.html</text>
+  </g>
+
+  <g transform="translate(568,132)">
+    <rect width="504" height="376" rx="8" fill="#fff" stroke="#d8d4cb"/>
+    <text x="24" y="44" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif" font-size="26" font-weight="800" fill="#20232d">Mirror object goal</text>
+    <text x="24" y="74" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif" font-size="14" fill="#68707d">Unit: src/d/actor/d_a_obj_mmrr.cpp · Worktree: dirty</text>
+    <g transform="translate(24,104)">
+      <rect width="108" height="76" rx="8" fill="#f7f5ef" stroke="#d8d4cb"/>
+      <text x="14" y="26" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif" font-size="11" font-weight="700" fill="#68707d">EXACT</text>
+      <text x="14" y="58" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif" font-size="27" font-weight="800" fill="#20232d">58/71</text>
+      <rect x="124" width="108" height="76" rx="8" fill="#f7f5ef" stroke="#d8d4cb"/>
+      <text x="138" y="26" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif" font-size="11" font-weight="700" fill="#68707d">CODE</text>
+      <text x="138" y="58" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif" font-size="27" font-weight="800" fill="#20232d">82.4%</text>
+      <rect x="248" width="108" height="76" rx="8" fill="#f7f5ef" stroke="#d8d4cb"/>
+      <text x="262" y="26" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif" font-size="11" font-weight="700" fill="#68707d">FUZZY</text>
+      <text x="262" y="58" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif" font-size="27" font-weight="800" fill="#20232d">99.1%</text>
+    </g>
+    <polyline points="38,302 116,286 194,252 272,212 350,184 456,164" fill="none" stroke="#316bc5" stroke-width="4"/>
+    <polyline points="38,318 116,306 194,284 272,248 350,220 456,198" fill="none" stroke="#3e8f60" stroke-width="4"/>
+    <line x1="38" y1="334" x2="456" y2="334" stroke="#d8d4cb"/>
+    <line x1="38" y1="254" x2="456" y2="254" stroke="#d8d4cb"/>
+    <line x1="38" y1="174" x2="456" y2="174" stroke="#d8d4cb"/>
+    <text x="24" y="360" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif" font-size="14" fill="#68707d">Coach: classify first mismatch, then run bounded variants.</text>
+  </g>
+</svg>

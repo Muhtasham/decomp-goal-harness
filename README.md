@@ -9,6 +9,8 @@ It is designed for hard-mode matching projects where the goal is C/C++ source th
 The intended workflow is the same shape as a focused Codex `/goal` run, inspired by
 [banteg](https://x.com/banteg)'s public Wind Waker matching-decomp experiments.
 
+![Demo flow](docs/demo.svg)
+
 1. choose one translation unit or function,
 2. configure/build the local decomp project,
 3. run the project oracle (`objdiff`, a progress report, or a custom score command),
@@ -38,6 +40,7 @@ uv sync --dev
 uv run ruff check .
 uv run ruff format --check .
 uv run ty check .
+uv run pytest
 uv run pre-commit run --all-files
 ```
 
@@ -78,6 +81,18 @@ Filter for one module:
 
 ```bash
 decomp-goal targets --repo /path/to/tww --query d_a_obj_mmrr
+```
+
+Pick agent-sized work and print ready-to-run goal commands:
+
+```bash
+decomp-goal pick --repo /path/to/tww --limit 10
+```
+
+Check local setup blockers before starting a long run:
+
+```bash
+decomp-goal doctor --repo /path/to/tww
 ```
 
 Render a scoped `/goal` prompt:
@@ -187,6 +202,7 @@ decomp-goal monitor \
   --repo /path/to/project \
   --unit src/d/actor/d_a_obj_mmrr.cpp \
   --dashboard-out .git/decomp-goal/dashboard.html \
+  --goal-html .git/decomp-goal/goal.html \
   --interval 300 \
   --max-ticks 999
 ```
@@ -200,6 +216,14 @@ decomp-goal dashboard --repo /path/to/project --title "Princess Zelda TU Progres
 ```
 
 The dashboard tracks exact functions, matched code, fuzzy score, blockers, and commit/head change markers from stored run records.
+
+Generate or refresh a richer `goal.html` cockpit for a long run:
+
+```bash
+decomp-goal goal-html --repo /path/to/project --unit src/d/actor/d_a_obj_mmrr.cpp
+```
+
+It includes the goal prompt, progress chart, current coach advice, recent steering leads, recent run records, worktree state, and latest metrics. Point `monitor --goal-html ...` at the same path to refresh it during long sessions.
 
 Write a goal prompt and print a Codex CLI runner command:
 

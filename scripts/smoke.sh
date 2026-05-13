@@ -20,7 +20,9 @@ fi
 
 uv run --project "$ROOT" python -m compileall "$ROOT/src" "$ROOT/examples/toy_match/score.py" >/dev/null
 uv run --project "$ROOT" decomp-goal inspect --repo "$ROOT" --json >/dev/null
+uv run --project "$ROOT" decomp-goal doctor --repo "$ROOT" --json >/dev/null
 uv run --project "$ROOT" decomp-goal gaps --repo "$ROOT" --state-dir "$STATE_DIR" --json >/dev/null
+uv run --project "$ROOT" decomp-goal pick --repo "$ROOT" --json >/dev/null
 uv run --project "$ROOT" decomp-goal run --repo "$ROOT" --unit attempt.c --state-dir "$STATE_DIR/root" --json >/dev/null
 uv run --project "$ROOT" decomp-goal inspect --repo "$ROOT/examples/toy_match" --json >/dev/null
 uv run --project "$ROOT" decomp-goal targets --repo "$ROOT/examples/toy_match" --rank --json >/dev/null
@@ -64,8 +66,12 @@ uv run --project "$ROOT" decomp-goal monitor --repo "$ROOT/examples/toy_match" -
 test -s "$STATE_DIR/monitor.html"
 uv run --project "$ROOT" decomp-goal monitor --repo "$ROOT/examples/toy_match" --unit attempt.start.c --state-dir "$STATE_DIR" --dashboard-out .decomp-goal/smoke-monitor.html --max-ticks 1 --json >/dev/null
 test -s "$ROOT/examples/toy_match/.decomp-goal/smoke-monitor.html"
+uv run --project "$ROOT" decomp-goal monitor --repo "$ROOT/examples/toy_match" --unit attempt.start.c --state-dir "$STATE_DIR" --goal-html .decomp-goal/goal.html --max-ticks 1 --json >/dev/null
+test -s "$ROOT/examples/toy_match/.decomp-goal/goal.html"
 uv run --project "$ROOT" decomp-goal codex --repo "$ROOT/examples/toy_match" --unit attempt.c --mode exec --reasoning-effort high --prompt-file "$PROMPT_FILE" --leads-dir "$LEADS_DIR" --json >/dev/null
 test -s "$PROMPT_FILE"
+uv run --project "$ROOT" decomp-goal goal-html --repo "$ROOT/examples/toy_match" --unit attempt.start.c --state-dir "$STATE_DIR" --out .decomp-goal/goal-once.html >/dev/null
+test -s "$ROOT/examples/toy_match/.decomp-goal/goal-once.html"
 uv run --project "$ROOT" decomp-goal experiments --repo "$ROOT/examples/toy_match" --unit attempt.start.c --out .decomp-goal/smoke-experiments.md --json >/dev/null
 test -s "$ROOT/examples/toy_match/.decomp-goal/smoke-experiments.md"
 uv run --project "$ROOT" decomp-goal dashboard --repo "$ROOT/examples/toy_match" --state-dir "$STATE_DIR" --out "$STATE_DIR/dashboard.html" >/dev/null
