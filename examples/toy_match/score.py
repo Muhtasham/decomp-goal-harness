@@ -76,11 +76,20 @@ def score(candidate: Path) -> dict[str, object]:
     )
     matched = filecmp.cmp(original_obj, candidate_obj, shallow=False)
     fuzzy = exact / total if total else 1.0
+    prefix = 0
+    for left, right in zip(original_bytes, candidate_bytes, strict=False):
+        if left != right:
+            break
+        prefix += 1
+    first_mismatch = None if matched else prefix
     return {
         "matched": matched,
         "score": round(fuzzy, 6),
         "exact_bytes": exact,
         "total_bytes": total,
+        "matching_prefix_bytes": prefix,
+        "matching_prefix_percent": round(prefix / total, 6) if total else 1.0,
+        "first_mismatch_offset": first_mismatch,
         "original": str(original_obj),
         "candidate": str(candidate_obj),
     }

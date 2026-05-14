@@ -1,0 +1,6 @@
+--- a/attempt.c
++++ b/attempt.c
+@@ -1,2 +1,3 @@
+ #include <stdint.h>
++/* variant */
+ 

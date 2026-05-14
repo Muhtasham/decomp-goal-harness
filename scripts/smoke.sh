@@ -44,6 +44,8 @@ VARIANT_STATE="$STATE_DIR/variants"
 mkdir -p "$VARIANT_STATE"
 uv run --project "$ROOT" decomp-goal run --repo "$ROOT/examples/toy_match" --unit attempt.start.c --state-dir "$VARIANT_STATE" --json >/dev/null || true
 uv run --project "$ROOT" decomp-goal variants --repo "$ROOT/examples/toy_match" --unit attempt.start.c --state-dir "$VARIANT_STATE" --patch-dir "$ROOT/examples/toy_match/variants" --allow-dirty --json >/dev/null
+uv run --project "$ROOT" decomp-goal fuzz --repo "$ROOT/examples/toy_match" --unit attempt.c --state-dir "$STATE_DIR/fuzz" --patch "$ROOT/examples/toy_match/variants/worse-attempt.patch" --patch "$ROOT/examples/toy_match/variants/noop-comment.patch" --combo-size 2 --max-combos 1 --allow-dirty --json >/dev/null
+git -C "$ROOT" diff --exit-code -- examples/toy_match/attempt.c >/dev/null
 if uv run --project "$ROOT" decomp-goal variants --repo "$ROOT/examples/toy_match" --unit attempt.c --state-dir "$STATE_DIR/bad-patch-dir" --patch-dir does-not-exist --json >/dev/null 2>&1; then
   echo "expected missing patch dir to fail" >&2
   exit 1
@@ -72,6 +74,10 @@ uv run --project "$ROOT" decomp-goal codex --repo "$ROOT/examples/toy_match" --u
 test -s "$PROMPT_FILE"
 uv run --project "$ROOT" decomp-goal goal-html --repo "$ROOT/examples/toy_match" --unit attempt.start.c --state-dir "$STATE_DIR" --out .decomp-goal/goal-once.html >/dev/null
 test -s "$ROOT/examples/toy_match/.decomp-goal/goal-once.html"
+uv run --project "$ROOT" decomp-goal run --repo "$ROOT/examples/toy_match" --unit attempt.start.c --state-dir "$STATE_DIR/watch-source" --json >"$STATE_DIR/report.json" || true
+uv run --project "$ROOT" decomp-goal watch --repo "$ROOT/examples/toy_match" --unit attempt.start.c --report-json "$STATE_DIR/report.json" --state-dir "$STATE_DIR/watch" --goal-html .decomp-goal/watch-goal.html --max-ticks 1 --json >/dev/null
+test -s "$ROOT/examples/toy_match/.decomp-goal/watch-goal.html"
+test -s "$STATE_DIR/watch/watch-history.jsonl"
 uv run --project "$ROOT" decomp-goal experiments --repo "$ROOT/examples/toy_match" --unit attempt.start.c --out .decomp-goal/smoke-experiments.md --json >/dev/null
 test -s "$ROOT/examples/toy_match/.decomp-goal/smoke-experiments.md"
 uv run --project "$ROOT" decomp-goal dashboard --repo "$ROOT/examples/toy_match" --state-dir "$STATE_DIR" --out "$STATE_DIR/dashboard.html" >/dev/null

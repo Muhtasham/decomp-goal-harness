@@ -1,0 +1,11 @@
+--- a/attempt.c
++++ b/attempt.c
+@@ -1,7 +1,7 @@
+ #include <stdint.h>
+ 
+ int score_room(int room, int keys, int flags) {
+-    int score = room * 17 + keys * 9;
++    int score = room * 18 + keys * 9;
+ 
+     if ((flags & 1) != 0) {
+         score += 31;

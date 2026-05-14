@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import html as html_lib
+import itertools
 import json
 import re
 import shlex
@@ -992,6 +993,29 @@ def write_run_record(result: dict[str, Any], state_dir: Path) -> None:
     path.write_text(json.dumps(result, indent=2), encoding="utf-8")
 
 
+def append_watch_history(record: dict[str, Any], state_dir: Path) -> None:
+    state_dir.mkdir(parents=True, exist_ok=True)
+    path = state_dir / "watch-history.jsonl"
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(record, sort_keys=True) + "\n")
+
+
+def load_watch_hashes(state_dir: Path) -> set[str]:
+    path = state_dir / "watch-history.jsonl"
+    if not path.exists():
+        return set()
+    hashes = set()
+    for line in path.read_text(encoding="utf-8").splitlines():
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        digest = record.get("external_report_sha256")
+        if isinstance(digest, str):
+            hashes.add(digest)
+    return hashes
+
+
 def load_history(state_dir: Path) -> list[dict[str, Any]]:
     if not state_dir.exists():
         return []
@@ -1018,6 +1042,9 @@ def extract_metrics(record: dict[str, Any]) -> dict[str, Any]:
         "total_functions": None,
         "matched_code": None,
         "total_code": None,
+        "matching_prefix_bytes": None,
+        "matching_prefix_percent": None,
+        "first_mismatch_offset": None,
     }
 
     if "exact_bytes" in score and "total_bytes" in score and score.get("total_bytes"):
@@ -1030,6 +1057,14 @@ def extract_metrics(record: dict[str, Any]) -> dict[str, Any]:
             metrics["fuzzy_percent"] = float(score["score"]) * 100
         metrics["exact_functions"] = 1 if record.get("matched") else 0
         metrics["total_functions"] = 1
+        prefix = score.get("matching_prefix_bytes")
+        if isinstance(prefix, int):
+            metrics["matching_prefix_bytes"] = prefix
+            metrics["matching_prefix_percent"] = prefix / total * 100 if total else None
+        elif isinstance(score.get("matching_prefix_percent"), (int, float)):
+            metrics["matching_prefix_percent"] = float(score["matching_prefix_percent"]) * 100
+        if isinstance(score.get("first_mismatch_offset"), int):
+            metrics["first_mismatch_offset"] = score["first_mismatch_offset"]
 
     if "progress_categories" in score:
         code_stats = [
@@ -1053,18 +1088,23 @@ def summarize_history(records: list[dict[str, Any]]) -> dict[str, Any]:
     last = records[-1] if records else None
     best_code = None
     best_fuzzy = None
+    best_prefix = None
     last_progress_at = None
     previous_code = None
     for record in records:
         metrics = record.get("_metrics") or extract_metrics(record)
         code = metrics.get("matched_code_percent")
         fuzzy = metrics.get("fuzzy_percent")
+        prefix = metrics.get("matching_prefix_percent")
         improved = False
         if code is not None and (best_code is None or code > best_code):
             best_code = code
             improved = True
         if fuzzy is not None and (best_fuzzy is None or fuzzy > best_fuzzy):
             best_fuzzy = fuzzy
+            improved = True
+        if prefix is not None and (best_prefix is None or prefix > best_prefix):
+            best_prefix = prefix
             improved = True
         if previous_code is not None and code is not None and code > previous_code:
             improved = True
@@ -1078,6 +1118,7 @@ def summarize_history(records: list[dict[str, Any]]) -> dict[str, Any]:
         "last_progress": last_progress_at,
         "best_matched_code_percent": best_code,
         "best_fuzzy_percent": best_fuzzy,
+        "best_matching_prefix_percent": best_prefix,
         "last_blocker": last.get("blocker") if last else None,
         "last_matched": last.get("matched") if last else None,
     }
@@ -1091,12 +1132,14 @@ def print_history(records: list[dict[str, Any]]) -> None:
         metrics = record.get("_metrics") or {}
         code = metrics.get("matched_code_percent")
         fuzzy = metrics.get("fuzzy_percent")
+        prefix = metrics.get("matching_prefix_percent")
         code_text = f"{code:.2f}%" if code is not None else "-"
         fuzzy_text = f"{fuzzy:.2f}%" if fuzzy is not None else "-"
+        prefix_text = f"{prefix:.2f}%" if prefix is not None else "-"
         head = (record.get("git") or {}).get("head") or "-"
         blocker = record.get("blocker") or "-"
         print(
-            f"{record.get('created_at')} {head} matched={record.get('matched')} code={code_text} fuzzy={fuzzy_text} blocker={blocker}"
+            f"{record.get('created_at')} {head} matched={record.get('matched')} code={code_text} prefix={prefix_text} fuzzy={fuzzy_text} blocker={blocker}"
         )
 
 
@@ -1150,6 +1193,8 @@ def build_checkpoint_report(repo: Path, records: list[dict[str, Any]]) -> dict[s
         ("exact_functions", "exact functions"),
         ("matched_code", "matched code bytes"),
         ("matched_code_percent", "matched code percent"),
+        ("matching_prefix_bytes", "matching prefix bytes"),
+        ("matching_prefix_percent", "matching prefix percent"),
         ("fuzzy_percent", "fuzzy percent"),
     ]:
         after = latest_metrics.get(key)
@@ -1214,15 +1259,16 @@ def commit_checkpoint(repo: Path, message: str) -> dict[str, Any]:
     return {"stdout": commit.stdout.strip(), "stderr": commit.stderr.strip()}
 
 
-def metric_tuple(record: dict[str, Any] | None) -> tuple[float, float, float, float]:
+def metric_tuple(record: dict[str, Any] | None) -> tuple[float, float, float, float, float]:
     if not record:
-        return (-1.0, -1.0, -1.0, -1.0)
+        return (-1.0, -1.0, -1.0, -1.0, -1.0)
     metrics = record.get("_metrics") or extract_metrics(record)
     matched = 1.0 if record.get("matched") is True else 0.0
     exact = float(metrics.get("exact_functions") or 0)
     code = float(metrics.get("matched_code") or 0)
+    prefix = float(metrics.get("matching_prefix_bytes") or 0)
     fuzzy = float(metrics.get("fuzzy_percent") or 0)
-    return (matched, exact, code, fuzzy)
+    return (matched, exact, code, prefix, fuzzy)
 
 
 def best_record(records: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -1266,6 +1312,31 @@ def git_apply(repo: Path, patch: Path, reverse: bool = False, check: bool = Fals
         args.append("--check")
     args.append(str(patch))
     return run_git(repo, args)
+
+
+def apply_patch_set(repo: Path, patch_paths: list[Path]) -> tuple[bool, str | None]:
+    applied = []
+    for patch in patch_paths:
+        check = git_apply(repo, patch, check=True)
+        if check.returncode != 0:
+            for applied_patch in reversed(applied):
+                git_apply(repo, applied_patch, reverse=True)
+            return False, (check.stderr or check.stdout).strip()
+        apply = git_apply(repo, patch)
+        if apply.returncode != 0:
+            for applied_patch in reversed(applied):
+                git_apply(repo, applied_patch, reverse=True)
+            return False, (apply.stderr or apply.stdout).strip()
+        applied.append(patch)
+    return True, None
+
+
+def revert_patch_set(repo: Path, patch_paths: list[Path]) -> tuple[bool, str | None]:
+    for patch in reversed(patch_paths):
+        revert = git_apply(repo, patch, reverse=True)
+        if revert.returncode != 0:
+            return False, (revert.stderr or revert.stdout).strip()
+    return True, None
 
 
 def run_variant_batch(
@@ -1357,6 +1428,101 @@ def run_variant_batch(
         "tested": len(results),
         "best_patch": str(best_variant["patch"]) if best_variant else None,
         "kept_patch": kept,
+        "results": results,
+    }
+
+
+def patch_combinations(patch_paths: list[Path], combo_size: int, max_combos: int) -> list[tuple[Path, ...]]:
+    combos = itertools.combinations(patch_paths, combo_size)
+    return list(itertools.islice(combos, max_combos))
+
+
+def run_fuzz_batch(
+    repo: Path,
+    unit: str | None,
+    state_dir: Path,
+    patch_paths: list[Path],
+    combo_size: int,
+    max_combos: int,
+    keep_best: bool,
+    allow_dirty: bool,
+) -> dict[str, Any]:
+    if combo_size < 1:
+        raise SystemExit("--combo-size must be at least 1")
+    if not patch_paths:
+        raise SystemExit("no patch files provided")
+    initial_dirty = git_status_short(repo)
+    if initial_dirty and not allow_dirty:
+        raise SystemExit("worktree is dirty; commit/stash/revert before running fuzz, or pass --allow-dirty")
+
+    history_before = load_history(state_dir)
+    unit_history = [record for record in history_before if unit is None or record.get("unit") == unit]
+    baseline = best_record(unit_history)
+    baseline_source = "history"
+    if baseline is None:
+        baseline = execute_harness(repo, unit)
+        baseline_source = "fresh"
+        write_run_record(baseline, state_dir)
+    initial_fingerprint = worktree_fingerprint(repo)
+    combos = patch_combinations(patch_paths, combo_size, max_combos)
+    best_combo: dict[str, Any] | None = None
+    results = []
+    for combo in combos:
+        combo_id = hashlib.sha256("\n".join(str(path) for path in combo).encode("utf-8")).hexdigest()[:12]
+        item: dict[str, Any] = {
+            "patches": [str(path) for path in combo],
+            "combo_id": combo_id,
+            "applied": False,
+        }
+        applied, error = apply_patch_set(repo, list(combo))
+        if not applied:
+            item["status"] = "apply_failed"
+            item["error"] = error
+            results.append(item)
+            continue
+        item["applied"] = True
+        try:
+            result = execute_harness(repo, unit)
+            result["variant"] = {"patches": [str(path) for path in combo], "combo_id": combo_id}
+            write_run_record(result, state_dir)
+            item["status"] = "tested"
+            item["matched"] = result.get("matched")
+            item["blocker"] = result.get("blocker")
+            item["metrics"] = extract_metrics(result)
+            item["improved"] = metric_tuple(result) > metric_tuple(baseline)
+            if item["improved"] and (best_combo is None or metric_tuple(result) > metric_tuple(best_combo["record"])):
+                best_combo = {"patches": list(combo), "record": result, "summary": item}
+        finally:
+            reverted, revert_error = revert_patch_set(repo, list(combo))
+            if not reverted:
+                item["revert_error"] = revert_error
+                item["status"] = "revert_failed"
+                results.append(item)
+                raise SystemExit(f"failed to reverse patch combo {combo_id}: {revert_error}")
+            after_revert = worktree_fingerprint(repo)
+            if after_revert.get("sha256") != initial_fingerprint.get("sha256"):
+                item["side_effect_error"] = "oracle or patch combo left tracked/untracked worktree changes after revert"
+                item["status"] = "side_effect_failed"
+                results.append(item)
+                raise SystemExit(item["side_effect_error"])
+        results.append(item)
+
+    kept = None
+    if keep_best and best_combo:
+        applied, error = apply_patch_set(repo, best_combo["patches"])
+        if not applied:
+            raise SystemExit(error or "failed to apply best patch combo")
+        kept = [str(path) for path in best_combo["patches"]]
+
+    return {
+        "repo": str(repo),
+        "unit": unit,
+        "baseline": metric_tuple(baseline),
+        "baseline_source": baseline_source,
+        "combo_size": combo_size,
+        "tested": len(results),
+        "best_combo": [str(path) for path in best_combo["patches"]] if best_combo else None,
+        "kept_combo": kept,
         "results": results,
     }
 
@@ -1610,6 +1776,7 @@ def generate_dashboard(records: list[dict[str, Any]], title: str) -> str:
     last_metrics = (records[-1].get("_metrics") or {}) if records else {}
     last_code = fmt_pct(last_metrics.get("matched_code_percent")) if records else "-"
     last_fuzzy = fmt_pct(last_metrics.get("fuzzy_percent")) if records else "-"
+    last_prefix = fmt_pct(last_metrics.get("matching_prefix_percent")) if records else "-"
     last_exact = fmt_exact(records[-1] if records else None)
     points = []
     for idx, record in enumerate(records):
@@ -1627,13 +1794,14 @@ def generate_dashboard(records: list[dict[str, Any]], title: str) -> str:
                 "subject": record.get("blocker") or ("matched" if record.get("matched") else "run"),
                 "code": code,
                 "fuzzy": fuzzy,
+                "prefix": metrics.get("matching_prefix_percent"),
                 "exact": exact,
             }
         )
 
     chart = render_svg_chart(points)
     rows = "\n".join(
-        f"<tr><td>{html_lib.escape(str(p['head'] or '-'))}</td><td>{fmt_pct(p['exact'])}</td><td>{fmt_pct(p['code'])}</td><td>{fmt_pct(p['fuzzy'])}</td><td>{html_lib.escape(str(p['subject']))}</td></tr>"
+        f"<tr><td>{html_lib.escape(str(p['head'] or '-'))}</td><td>{fmt_pct(p['exact'])}</td><td>{fmt_pct(p['code'])}</td><td>{fmt_pct(p.get('prefix'))}</td><td>{fmt_pct(p['fuzzy'])}</td><td>{html_lib.escape(str(p['subject']))}</td></tr>"
         for p in reversed(points[-30:])
     )
     return f"""<!doctype html>
@@ -1667,6 +1835,7 @@ def generate_dashboard(records: list[dict[str, Any]], title: str) -> str:
   <section class="grid">
     <div class="card"><div class="label">Exact Functions</div><div class="value">{last_exact}</div></div>
     <div class="card"><div class="label">Matched Code</div><div class="value">{last_code}</div></div>
+    <div class="card"><div class="label">Matching Prefix</div><div class="value">{last_prefix}</div></div>
     <div class="card"><div class="label">Fuzzy Match</div><div class="value">{last_fuzzy}</div></div>
     <div class="card"><div class="label">Last Blocker</div><div class="value" style="font-size:24px">{html_lib.escape(str(summary["last_blocker"] or "-"))}</div></div>
   </section>
@@ -1674,13 +1843,14 @@ def generate_dashboard(records: list[dict[str, Any]], title: str) -> str:
     <div class="legend">
       <span><span class="dot" style="background:#316bc5"></span>Matched code %</span>
       <span><span class="dot" style="background:#3e8f60"></span>Exact functions %</span>
+      <span><span class="dot" style="background:#7b61ff"></span>Matching prefix %</span>
       <span><span class="dot" style="background:#b46b1d"></span>Fuzzy %</span>
       <span><span class="dot" style="background:#858c97"></span>Commit/change points</span>
     </div>
     {chart}
   </section>
   <table>
-    <thead><tr><th>Point</th><th>Exact</th><th>Code</th><th>Fuzzy</th><th>Subject</th></tr></thead>
+    <thead><tr><th>Point</th><th>Exact</th><th>Code</th><th>Prefix</th><th>Fuzzy</th><th>Subject</th></tr></thead>
     <tbody>{rows}</tbody>
   </table>
 </main>
@@ -1710,6 +1880,7 @@ def generate_goal_html(
                 "head": (record.get("git") or {}).get("head"),
                 "code": metrics.get("matched_code_percent"),
                 "fuzzy": metrics.get("fuzzy_percent"),
+                "prefix": metrics.get("matching_prefix_percent"),
                 "exact": exact_percent_from_metrics(metrics),
             }
         )
@@ -1721,10 +1892,7 @@ def generate_goal_html(
         for lead in leads
     )
     advice_items = "\n".join(f"<li>{html_lib.escape(item)}</li>" for item in coach.get("advice", []))
-    run_rows = "\n".join(
-        f"<tr><td>{html_lib.escape(str(record.get('created_at') or '-'))}</td><td>{html_lib.escape(str((record.get('git') or {}).get('head') or '-'))}</td><td>{fmt_exact(record)}</td><td>{fmt_pct((record.get('_metrics') or {}).get('matched_code_percent'))}</td><td>{fmt_pct((record.get('_metrics') or {}).get('fuzzy_percent'))}</td><td>{html_lib.escape(str(record.get('blocker') or ('matched' if record.get('matched') else '-')))}</td></tr>"
-        for record in reversed(records[-20:])
-    )
+    run_rows = "\n".join(render_goal_run_row(record) for record in reversed(records[-20:]))
     dirty = git_info(repo).get("dirty") == "true"
     return f"""<!doctype html>
 <html lang="en">
@@ -1756,7 +1924,7 @@ def generate_goal_html(
   <section class="grid">
     <div class="card"><div class="label">Exact Functions</div><div class="value">{fmt_exact(last if records else None)}</div></div>
     <div class="card"><div class="label">Matched Code</div><div class="value">{fmt_pct(last_metrics.get("matched_code_percent"))}</div></div>
-    <div class="card"><div class="label">Fuzzy</div><div class="value">{fmt_pct(last_metrics.get("fuzzy_percent"))}</div></div>
+    <div class="card"><div class="label">Matching Prefix</div><div class="value">{fmt_pct(last_metrics.get("matching_prefix_percent"))}</div></div>
     <div class="card"><div class="label">Worktree</div><div class="value">{"dirty" if dirty else "clean"}</div></div>
   </section>
   <section class="panel">
@@ -1778,7 +1946,7 @@ def generate_goal_html(
   </section>
   <section class="panel">
     <h2>Recent Runs</h2>
-    <table><thead><tr><th>Time</th><th>Head</th><th>Exact</th><th>Code</th><th>Fuzzy</th><th>Status</th></tr></thead><tbody>{run_rows}</tbody></table>
+    <table><thead><tr><th>Time</th><th>Head</th><th>Exact</th><th>Code</th><th>Prefix</th><th>Fuzzy</th><th>First Mismatch</th><th>Status</th></tr></thead><tbody>{run_rows}</tbody></table>
   </section>
 </main>
 </body>
@@ -1790,6 +1958,29 @@ def fmt_pct(value: Any) -> str:
     if value is None:
         return "-"
     return f"{float(value):.2f}%"
+
+
+def fmt_offset(value: Any) -> str:
+    if value is None:
+        return "-"
+    if isinstance(value, int):
+        return f"0x{value:X}"
+    return str(value)
+
+
+def render_goal_run_row(record: dict[str, Any]) -> str:
+    metrics = record.get("_metrics") or {}
+    status = record.get("blocker") or ("matched" if record.get("matched") else "-")
+    return (
+        f"<tr><td>{html_lib.escape(str(record.get('created_at') or '-'))}</td>"
+        f"<td>{html_lib.escape(str((record.get('git') or {}).get('head') or '-'))}</td>"
+        f"<td>{fmt_exact(record)}</td>"
+        f"<td>{fmt_pct(metrics.get('matched_code_percent'))}</td>"
+        f"<td>{fmt_pct(metrics.get('matching_prefix_percent'))}</td>"
+        f"<td>{fmt_pct(metrics.get('fuzzy_percent'))}</td>"
+        f"<td>{html_lib.escape(fmt_offset(metrics.get('first_mismatch_offset')))}</td>"
+        f"<td>{html_lib.escape(str(status))}</td></tr>"
+    )
 
 
 def exact_percent_from_metrics(metrics: dict[str, Any]) -> float | None:
@@ -1853,6 +2044,7 @@ def render_svg_chart(points: list[dict[str, Any]]) -> str:
   {"".join(commit_lines)}
   <path d="{path_for("code")}" fill="none" stroke="#316bc5" stroke-width="3"/>
   <path d="{path_for("exact")}" fill="none" stroke="#3e8f60" stroke-width="3"/>
+  <path d="{path_for("prefix")}" fill="none" stroke="#7b61ff" stroke-width="3"/>
   <path d="{path_for("fuzzy")}" fill="none" stroke="#b46b1d" stroke-width="3"/>
 </svg>"""
 
@@ -2184,13 +2376,15 @@ def coach_history(records: list[dict[str, Any]], min_runs: int, plateau_runs: in
     last_metrics = records[-1].get("_metrics") or {}
     last_code = last_metrics.get("matched_code_percent")
     last_fuzzy = last_metrics.get("fuzzy_percent")
-    high_score = any(value is not None and value >= 99.0 for value in [last_code, last_fuzzy])
+    last_prefix = last_metrics.get("matching_prefix_percent")
+    high_score = any(value is not None and value >= 99.0 for value in [last_code, last_prefix, last_fuzzy])
 
-    def metric_key(record: dict[str, Any]) -> tuple[Any, Any, Any]:
+    def metric_key(record: dict[str, Any]) -> tuple[Any, Any, Any, Any]:
         metrics = record.get("_metrics") or {}
         return (
             metrics.get("matched_code"),
             metrics.get("exact_functions"),
+            metrics.get("matching_prefix_bytes"),
             metrics.get("fuzzy_percent"),
         )
 
@@ -2201,8 +2395,10 @@ def coach_history(records: list[dict[str, Any]], min_runs: int, plateau_runs: in
         advice.extend(
             [
                 "Stop broad rewrites. Generate a diff lead and run a bounded experiment queue.",
+                "Treat fuzzy as secondary after 99%; prioritize matching prefix and first mismatch offset.",
                 "Classify the first remaining mismatch before editing: string pool, branch shape, regalloc, relocation, inline, stack layout, or missing type.",
-                "Inject a human/decompiler lead if three single-hypothesis variants do not improve the oracle.",
+                "Try bounded patch-combination fuzzing if single-hypothesis variants stall.",
+                "Inject a human/decompiler lead if the same mismatch class survives several variants.",
             ]
         )
     elif plateau:
@@ -2218,7 +2414,8 @@ def coach_history(records: list[dict[str, Any]], min_runs: int, plateau_runs: in
         advice.extend(
             [
                 "High score detected. Switch from exploration to evidence-led variants.",
-                "Commit only exact improvements, byte improvements, or documented layout unblocks.",
+                "Use matching prefix and first mismatch offset as the main last-mile signal; fuzzy can be misleading.",
+                "Commit only exact improvements, byte/prefix improvements, or documented layout unblocks.",
             ]
         )
     else:
@@ -2377,6 +2574,75 @@ Repo: `{repo}`
 | 002 |  |  |  |  |  |
 | 003 |  |  |  |  |  |
 """
+
+
+def normalize_external_report(
+    repo: Path, unit: str | None, payload: Any, source_path: Path, source_sha256: str | None = None
+) -> dict[str, Any]:
+    if isinstance(payload, list):
+        payload = payload[-1] if payload else {}
+    if not isinstance(payload, dict):
+        payload = {"raw": payload}
+    if {"created_at", "repo", "adapter", "commands"} & set(payload):
+        record = dict(payload)
+    else:
+        record = {
+            "score": payload,
+            "matched": payload.get("matched") if isinstance(payload.get("matched"), bool) else None,
+            "blocker": payload.get("blocker"),
+            "commands": [],
+        }
+    record.setdefault("created_at", datetime.now(timezone.utc).isoformat())
+    record.setdefault("repo", str(repo))
+    record.setdefault("adapter", "external")
+    record.setdefault("unit", unit)
+    record.setdefault("git", git_info(repo))
+    record.setdefault("worktree_fingerprint", worktree_fingerprint(repo))
+    record["external_report"] = str(source_path)
+    if source_sha256:
+        record["external_report_sha256"] = source_sha256
+    return record
+
+
+def run_watch(
+    repo: Path,
+    unit: str | None,
+    report_json: Path,
+    state_dir: Path,
+    goal_html_out: Path | None,
+    title: str,
+    interval_seconds: int,
+    max_ticks: int,
+    json_output: bool,
+) -> int:
+    seen_hashes = load_watch_hashes(state_dir)
+    events = []
+    for tick in range(max(1, max_ticks)):
+        if report_json.exists():
+            raw = report_json.read_bytes()
+            digest = hashlib.sha256(raw).hexdigest()
+            if digest not in seen_hashes:
+                seen_hashes.add(digest)
+                payload = json.loads(raw.decode("utf-8"))
+                record = normalize_external_report(repo, unit, payload, report_json, digest)
+                write_run_record(record, state_dir)
+                append_watch_history(record, state_dir)
+                events.append({"tick": tick + 1, "recorded": True, "sha256": digest})
+            else:
+                events.append({"tick": tick + 1, "recorded": False, "sha256": digest})
+        else:
+            events.append({"tick": tick + 1, "recorded": False, "missing": str(report_json)})
+        if goal_html_out:
+            goal_html_out.parent.mkdir(parents=True, exist_ok=True)
+            goal_html_out.write_text(generate_goal_html(repo, state_dir, unit, title), encoding="utf-8")
+        if tick + 1 < max_ticks:
+            time.sleep(interval_seconds)
+    if json_output:
+        print(json.dumps(events, indent=2))
+    else:
+        for event in events:
+            print(event)
+    return 0
 
 
 def render_codex_runner(
@@ -2577,6 +2843,21 @@ def main(argv: list[str] | None = None) -> int:
     variants_p.add_argument("--allow-dirty", action="store_true")
     variants_p.add_argument("--json", action="store_true")
 
+    fuzz_p = sub.add_parser(
+        "fuzz",
+        help="Try bounded combinations of patch variants and keep only measured improvements",
+    )
+    fuzz_p.add_argument("--repo", type=repo_path, default=Path.cwd())
+    fuzz_p.add_argument("--unit")
+    fuzz_p.add_argument("--state-dir", type=Path)
+    fuzz_p.add_argument("--patch-dir", type=Path)
+    fuzz_p.add_argument("--patch", type=Path, action="append")
+    fuzz_p.add_argument("--combo-size", type=int, default=2)
+    fuzz_p.add_argument("--max-combos", type=int, default=200)
+    fuzz_p.add_argument("--keep-best", action="store_true")
+    fuzz_p.add_argument("--allow-dirty", action="store_true")
+    fuzz_p.add_argument("--json", action="store_true")
+
     steer_p = sub.add_parser("steer", help="Record or list external steering leads for the next goal prompt")
     steer_p.add_argument("--repo", type=repo_path, default=Path.cwd())
     steer_p.add_argument("--unit")
@@ -2629,6 +2910,19 @@ def main(argv: list[str] | None = None) -> int:
     goal_html_p.add_argument("--state-dir", type=Path)
     goal_html_p.add_argument("--out", type=Path)
     goal_html_p.add_argument("--title", default="Decomp Goal Progress")
+
+    watch_p = sub.add_parser(
+        "watch", help="Watch external report JSON, copy changes into history, and refresh goal.html"
+    )
+    watch_p.add_argument("--repo", type=repo_path, default=Path.cwd())
+    watch_p.add_argument("--unit")
+    watch_p.add_argument("--report-json", type=Path, required=True)
+    watch_p.add_argument("--state-dir", type=Path)
+    watch_p.add_argument("--goal-html", type=Path)
+    watch_p.add_argument("--title", default="Decomp Goal Progress")
+    watch_p.add_argument("--interval", type=int, default=5)
+    watch_p.add_argument("--max-ticks", type=int, default=1)
+    watch_p.add_argument("--json", action="store_true")
 
     dashboard_p = sub.add_parser("dashboard", help="Generate a local HTML progress dashboard")
     dashboard_p.add_argument("--repo", type=repo_path, default=Path.cwd())
@@ -2794,6 +3088,26 @@ def main(argv: list[str] | None = None) -> int:
             print(f"best_patch: {report['best_patch'] or '-'}")
             print(f"kept_patch: {report['kept_patch'] or '-'}")
         return 0
+    if args.command == "fuzz":
+        state_dir = repo_relative_or_default(args.repo, args.state_dir, default_state_dir(args.repo))
+        patch_paths = collect_patch_paths(args.repo, args.patch_dir, args.patch)
+        report = run_fuzz_batch(
+            args.repo,
+            args.unit,
+            state_dir,
+            patch_paths,
+            args.combo_size,
+            args.max_combos,
+            args.keep_best,
+            args.allow_dirty,
+        )
+        if args.json:
+            print(json.dumps(report, indent=2))
+        else:
+            print(f"tested: {report['tested']}")
+            print(f"best_combo: {report['best_combo'] or '-'}")
+            print(f"kept_combo: {report['kept_combo'] or '-'}")
+        return 0
     if args.command == "steer":
         parts = []
         if args.file:
@@ -2890,6 +3204,21 @@ def main(argv: list[str] | None = None) -> int:
         out.write_text(generate_goal_html(args.repo, state_dir, args.unit, args.title), encoding="utf-8")
         print(out)
         return 0
+    if args.command == "watch":
+        state_dir = repo_relative_or_default(args.repo, args.state_dir, default_state_dir(args.repo))
+        goal_html_out = optional_repo_path(args.repo, args.goal_html)
+        goal_html_out = goal_html_out.resolve() if goal_html_out else None
+        return run_watch(
+            args.repo,
+            args.unit,
+            resolve_repo_path(args.repo, args.report_json),
+            state_dir,
+            goal_html_out,
+            args.title,
+            args.interval,
+            args.max_ticks,
+            args.json,
+        )
     if args.command == "dashboard":
         state_dir = repo_relative_or_default(args.repo, args.state_dir, default_state_dir(args.repo))
         out = repo_relative_or_default(args.repo, args.out, default_dashboard_path(args.repo))

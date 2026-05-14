@@ -165,6 +165,17 @@ decomp-goal variants \
 
 Use `--keep-best` only when you want the best improving patch left applied after the batch.
 
+Try bounded combinations of patch variants for last-mile stalls:
+
+```bash
+decomp-goal fuzz \
+  --repo /path/to/project \
+  --unit src/d/actor/d_a_obj_mmrr.cpp \
+  --patch-dir .git/decomp-goal/variants \
+  --combo-size 2 \
+  --max-combos 300
+```
+
 Record an external steering lead from a human, Ghidra, IDA, Binja, GPT-Pro, or objdiff:
 
 ```bash
@@ -225,6 +236,18 @@ decomp-goal goal-html --repo /path/to/project --unit src/d/actor/d_a_obj_mmrr.cp
 
 It includes the goal prompt, progress chart, current coach advice, recent steering leads, recent run records, worktree state, and latest metrics. Point `monitor --goal-html ...` at the same path to refresh it during long sessions.
 
+If another tool already writes report JSON, copy changes into harness history and refresh `goal.html`:
+
+```bash
+decomp-goal watch \
+  --repo /path/to/project \
+  --unit src/d/actor/d_a_obj_mmrr.cpp \
+  --report-json report.json \
+  --goal-html .git/decomp-goal/goal.html \
+  --interval 5 \
+  --max-ticks 999
+```
+
 Write a goal prompt and print a Codex CLI runner command:
 
 ```bash
@@ -281,7 +304,7 @@ The harness does not fetch or create original game inputs. If a project requires
 
 ## Toy demo
 
-`examples/toy_match` is a copyright-clean mini matching project for source checkouts of this repo. It compiles `original.c` and a candidate C file with fixed flags, compares the generated object bytes, and reports exact/fuzzy score.
+`examples/toy_match` is a copyright-clean mini matching project for source checkouts of this repo. It compiles `original.c` and a candidate C file with fixed flags, compares the generated object bytes, and reports exact/fuzzy/prefix score.
 
 Exact match:
 
@@ -330,7 +353,7 @@ The harness is designed around the workflow shown in banteg's Wind Waker `d_a_pz
 - one translation unit goal at a time,
 - no fakematching or forbidden decomp tricks,
 - compile/diff/score after each meaningful edit,
-- commit only exact improvements, fuzzy improvements, or structural layout unblocks,
+- commit only exact improvements, byte/prefix improvements, or structural layout unblocks,
 - inject external leads when the agent is stuck: human notes, GPT-Pro notes, Ghidra, IDA, Binja, objdiff, debug maps,
 - treat sudden exact-function jumps as possible layout cascades until proven,
 - record the remaining mismatch class when stuck: string pool, relocation, branch shape, regalloc, weak/template ordering, inline, missing type, or missing original input.
@@ -339,18 +362,20 @@ The harness is intentionally an oracle wrapper, not an autonomous source mutator
 
 ## Reducing the last-mile grind
 
-The painful part starts when a TU is nearly correct but one or two functions still refuse to match. The harness tries to reduce that by forcing a more mechanical loop:
+The painful part starts when a TU is nearly correct but one or two functions still refuse to match. Fuzzy score can become misleading after 99%, so the harness treats matching prefix and first mismatch offset as stronger last-mile signals when a score command reports them.
 
 1. `decomp-goal lead` classifies the diff into mismatch classes such as string pool, branch shape, regalloc, relocation/call target, stack frame, constant/type, or unknown.
 2. `decomp-goal lead --diff-json` ingests structured objdiff/asm-differ-style JSON when a project can export it.
 3. `decomp-goal experiments` writes a checklist for one-hypothesis-at-a-time variants under the repo's Git metadata path.
 4. `decomp-goal variants` applies patch files one at a time, runs the oracle, records metrics, and reverts non-kept variants.
-5. `decomp-goal coach` watches run history for high-score plateaus and tells the agent to stop broad rewrites when it is stuck.
-6. `decomp-goal monitor` runs that coaching loop periodically during tmux sessions and writes a steering prompt when intervention is needed.
-7. `decomp-goal steer` and `decomp-goal decompilers` store external leads and inject the latest ones into the next generated `/goal` prompt.
-8. `decomp-goal checkpoint` makes "commit every improvement" mechanical: it compares the latest run against prior history and only allows a commit when the oracle improved.
+5. `decomp-goal fuzz` tries bounded combinations of patch variants when the last mile needs the right combination of source edits.
+6. `decomp-goal coach` watches run history for high-score plateaus and tells the agent to stop broad rewrites when it is stuck.
+7. `decomp-goal monitor` runs that coaching loop periodically during tmux sessions and writes a steering prompt when intervention is needed.
+8. `decomp-goal watch` copies changing external report JSON into durable harness history and refreshes `goal.html`.
+9. `decomp-goal steer` and `decomp-goal decompilers` store external leads and inject the latest ones into the next generated `/goal` prompt.
+10. `decomp-goal checkpoint` makes "commit every improvement" mechanical: it compares the latest run against prior history and only allows a commit when the oracle improved.
 
-That does not eliminate the hard part, but it keeps the agent from random-walking after 99%. The expected behavior is: classify first, try bounded variants, revert failures, preserve only oracle improvements, and ask for a human/decompiler/debug-map lead when the same mismatch class survives several variants.
+That does not eliminate the hard part, but it keeps the agent from random-walking after 99%. The expected behavior is: classify first, watch matching prefix/first mismatch, try bounded variants and combinations, revert failures, preserve only oracle improvements, and ask for a human/decompiler/debug-map lead when the same mismatch class survives several variants.
 
 The remaining non-code boundary is original game input. The harness intentionally reports `missing_original_input`; it does not fetch, generate, or bypass copyrighted game material.
 
