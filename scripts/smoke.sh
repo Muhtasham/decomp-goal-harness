@@ -74,6 +74,8 @@ uv run --project "$ROOT" decomp-goal codex --repo "$ROOT/examples/toy_match" --u
 test -s "$PROMPT_FILE"
 uv run --project "$ROOT" decomp-goal goal-html --repo "$ROOT/examples/toy_match" --unit attempt.start.c --state-dir "$STATE_DIR" --out .decomp-goal/goal-once.html >/dev/null
 test -s "$ROOT/examples/toy_match/.decomp-goal/goal-once.html"
+uv run --project "$ROOT" decomp-goal portal --repo "$ROOT/examples/toy_match" --out .decomp-goal/portal.html --limit 2 >/dev/null
+test -s "$ROOT/examples/toy_match/.decomp-goal/portal.html"
 uv run --project "$ROOT" decomp-goal run --repo "$ROOT/examples/toy_match" --unit attempt.start.c --state-dir "$STATE_DIR/watch-source" --json >"$STATE_DIR/report.json" || true
 uv run --project "$ROOT" decomp-goal watch --repo "$ROOT/examples/toy_match" --unit attempt.start.c --report-json "$STATE_DIR/report.json" --state-dir "$STATE_DIR/watch" --goal-html .decomp-goal/watch-goal.html --max-ticks 1 --json >/dev/null
 test -s "$ROOT/examples/toy_match/.decomp-goal/watch-goal.html"

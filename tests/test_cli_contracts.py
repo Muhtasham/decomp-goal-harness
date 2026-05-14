@@ -9,6 +9,7 @@ from decomp_goal.cli import (
     build_gap_report,
     dtk_progress_matched,
     extract_metrics,
+    generate_contributor_portal,
     metric_tuple,
     normalize_external_report,
     parse_dtk_progress,
@@ -162,6 +163,28 @@ def test_watch_persists_report_hashes_across_invocations(tmp_path: Path) -> None
     lines = (state_dir / "watch-history.jsonl").read_text(encoding="utf-8").splitlines()
     assert len(lines) == 1
     assert json.loads(lines[0])["external_report_sha256"]
+
+
+def test_contributor_portal_explains_safe_agent_flow(tmp_path: Path) -> None:
+    (tmp_path / "decomp-goal.toml").write_text(
+        """
+[project]
+name = "portal-demo"
+adapter = "generic"
+default_unit = "attempt.c"
+
+[commands]
+score = "python score.py --candidate {unit} --json"
+""".strip(),
+        encoding="utf-8",
+    )
+
+    html = generate_contributor_portal(tmp_path, "Portal", 3, None)
+
+    assert "Beginner Flow" in html
+    assert "decomp-goal doctor" in html
+    assert "decomp-goal goal" in html
+    assert "Do not upload, fetch, or generate copyrighted original game input." in html
 
 
 def test_apply_patch_set_reverts_earlier_patch_when_later_check_fails(tmp_path: Path) -> None:

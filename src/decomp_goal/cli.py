@@ -198,6 +198,10 @@ def default_goal_html_path(repo: Path) -> Path:
     return git_path(repo, "decomp-goal/goal.html") or (repo / ".decomp-goal" / "goal.html").resolve()
 
 
+def default_portal_path(repo: Path) -> Path:
+    return git_path(repo, "decomp-goal/portal.html") or (repo / ".decomp-goal" / "portal.html").resolve()
+
+
 def default_prompt_path(repo: Path) -> Path:
     return git_path(repo, "decomp-goal/goal.txt") or (repo / ".decomp-goal" / "goal.txt").resolve()
 
@@ -1954,6 +1958,131 @@ def generate_goal_html(
 """
 
 
+def render_shell(command: str) -> str:
+    return f"<code>{html_lib.escape(command)}</code>"
+
+
+def command_for(parts: list[str]) -> str:
+    return " ".join(shlex.quote(part) for part in parts)
+
+
+def generate_contributor_portal(repo: Path, title: str, limit: int, query: str | None) -> str:
+    doctor = build_doctor_report(repo)
+    pick_report = build_pick_report(repo, limit, query)
+    checks = "\n".join(
+        "<tr>"
+        f"<td>{html_lib.escape(str(check['name']))}</td>"
+        f'<td><span class="status {html_lib.escape(str(check["status"]))}">{html_lib.escape(str(check["status"]))}</span></td>'
+        f"<td>{html_lib.escape(str(check['detail']))}</td>"
+        f"<td>{html_lib.escape(str(check.get('fix') or '-'))}</td>"
+        "</tr>"
+        for check in doctor["checks"]
+    )
+    pick_rows = []
+    for pick in pick_report["picks"]:
+        unit = str(pick["unit"])
+        goal_command = command_for(["decomp-goal", "goal", "--repo", str(repo), "--unit", unit])
+        run_command_text = command_for(["decomp-goal", "run", "--repo", str(repo), "--unit", unit])
+        cockpit_command = command_for(["decomp-goal", "goal-html", "--repo", str(repo), "--unit", unit])
+        codex_command = command_for(["decomp-goal", "codex", "--repo", str(repo), "--unit", unit, "--mode", "tmux"])
+        reasons = "; ".join(pick.get("rank_reasons") or []) or "configured target"
+        pick_rows.append(
+            '<section class="target">'
+            f"<h3>{html_lib.escape(unit)}</h3>"
+            f"<p>{html_lib.escape(reasons)}</p>"
+            '<div class="commands">'
+            f"{render_shell(goal_command)}"
+            f"{render_shell(run_command_text)}"
+            f"{render_shell(cockpit_command)}"
+            f"{render_shell(codex_command)}"
+            "</div>"
+            "</section>"
+        )
+    picks_html = "\n".join(pick_rows) if pick_rows else "<p>No beginner-sized targets were found yet.</p>"
+    doctor_command = command_for(["decomp-goal", "doctor", "--repo", str(repo)])
+    pick_command = command_for(["decomp-goal", "pick", "--repo", str(repo), "--limit", str(limit)])
+    if query:
+        pick_command = command_for(
+            ["decomp-goal", "pick", "--repo", str(repo), "--limit", str(limit), "--query", query]
+        )
+    monitor_command = command_for(["decomp-goal", "monitor", "--repo", str(repo), "--max-ticks", "999"])
+    status_text = {
+        "ok": "Ready",
+        "warn": "Usable with warnings",
+        "blocked": "Blocked",
+    }.get(str(doctor["overall"]), str(doctor["overall"]))
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{html_lib.escape(title)}</title>
+  <style>
+    :root {{ color-scheme: light; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }}
+    body {{ margin: 0; background: #f7f5ef; color: #20232b; }}
+    main {{ max-width: 1120px; margin: 0 auto; padding: 36px 20px 56px; }}
+    h1 {{ margin: 0 0 8px; font-size: 34px; line-height: 1.1; letter-spacing: 0; }}
+    h2 {{ margin: 32px 0 12px; font-size: 20px; }}
+    h3 {{ margin: 0 0 8px; font-size: 16px; }}
+    p {{ color: #5f6570; line-height: 1.5; }}
+    .top {{ display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; border-bottom: 1px solid #d8d3c8; padding-bottom: 22px; }}
+    .badge {{ padding: 8px 10px; border: 1px solid #b9b2a5; border-radius: 6px; background: #fff; font-weight: 700; white-space: nowrap; }}
+    .flow {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; }}
+    .step, .target {{ border: 1px solid #d8d3c8; border-radius: 8px; background: #fff; padding: 14px; }}
+    .step strong {{ display: block; margin-bottom: 6px; }}
+    table {{ width: 100%; border-collapse: collapse; background: #fff; border: 1px solid #d8d3c8; border-radius: 8px; overflow: hidden; }}
+    th, td {{ text-align: left; padding: 10px; border-bottom: 1px solid #ebe7dd; vertical-align: top; }}
+    th {{ color: #6d717b; font-size: 12px; text-transform: uppercase; }}
+    .status {{ display: inline-block; min-width: 64px; padding: 3px 7px; border-radius: 999px; font-size: 12px; font-weight: 700; text-align: center; }}
+    .status.ok {{ background: #dff1e6; color: #17653a; }}
+    .status.warn {{ background: #fff1c2; color: #785600; }}
+    .status.fail, .status.external {{ background: #fae0dd; color: #8a231c; }}
+    .targets {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; }}
+    .commands {{ display: grid; gap: 8px; }}
+    code {{ display: block; padding: 9px 10px; border-radius: 6px; background: #1f232b; color: #f5f7fb; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; }}
+    .rules {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px; }}
+    .rule {{ border-left: 4px solid #3b6fc6; background: #fff; padding: 12px 14px; border-radius: 6px; }}
+  </style>
+</head>
+<body>
+<main>
+  <section class="top">
+    <div>
+      <h1>{html_lib.escape(title)}</h1>
+      <p>Local contributor portal for turning this matching-decomp worktree into safe, scoped agent runs.</p>
+    </div>
+    <div class="badge">{html_lib.escape(status_text)}</div>
+  </section>
+
+  <h2>Beginner Flow</h2>
+  <section class="flow">
+    <div class="step"><strong>1. Check setup</strong>{render_shell(doctor_command)}</div>
+    <div class="step"><strong>2. Pick a target</strong>{render_shell(pick_command)}</div>
+    <div class="step"><strong>3. Run the oracle</strong><p>Build/diff must be local and repeatable before an agent edits source.</p></div>
+    <div class="step"><strong>4. Watch progress</strong>{render_shell(monitor_command)}</div>
+  </section>
+
+  <h2>Setup Readiness</h2>
+  <table>
+    <thead><tr><th>Check</th><th>Status</th><th>Detail</th><th>Fix</th></tr></thead>
+    <tbody>{checks}</tbody>
+  </table>
+
+  <h2>Safe Starting Targets</h2>
+  <section class="targets">{picks_html}</section>
+
+  <h2>Contribution Boundaries</h2>
+  <section class="rules">
+    <div class="rule">Do not upload, fetch, or generate copyrighted original game input.</div>
+    <div class="rule">Do not patch generated objects, binaries, or build outputs to force a match.</div>
+    <div class="rule">Prefer one small translation unit or function per goal.</div>
+    <div class="rule">Submit only reviewable branches with oracle records and a clear mismatch story.</div>
+  </section>
+</main>
+</body>
+</html>"""
+
+
 def fmt_pct(value: Any) -> str:
     if value is None:
         return "-"
@@ -2911,6 +3040,13 @@ def main(argv: list[str] | None = None) -> int:
     goal_html_p.add_argument("--out", type=Path)
     goal_html_p.add_argument("--title", default="Decomp Goal Progress")
 
+    portal_p = sub.add_parser("portal", help="Generate a local contributor portal for safe beginner agent runs")
+    portal_p.add_argument("--repo", type=repo_path, default=Path.cwd())
+    portal_p.add_argument("--out", type=Path)
+    portal_p.add_argument("--title", default="Decomp Contributor Portal")
+    portal_p.add_argument("--limit", type=int, default=6)
+    portal_p.add_argument("--query")
+
     watch_p = sub.add_parser(
         "watch", help="Watch external report JSON, copy changes into history, and refresh goal.html"
     )
@@ -3202,6 +3338,12 @@ def main(argv: list[str] | None = None) -> int:
         out = repo_relative_or_default(args.repo, args.out, default_goal_html_path(args.repo))
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(generate_goal_html(args.repo, state_dir, args.unit, args.title), encoding="utf-8")
+        print(out)
+        return 0
+    if args.command == "portal":
+        out = repo_relative_or_default(args.repo, args.out, default_portal_path(args.repo))
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(generate_contributor_portal(args.repo, args.title, args.limit, args.query), encoding="utf-8")
         print(out)
         return 0
     if args.command == "watch":

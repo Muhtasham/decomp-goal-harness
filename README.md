@@ -95,6 +95,14 @@ Check local setup blockers before starting a long run:
 decomp-goal doctor --repo /path/to/tww
 ```
 
+Generate a local contributor portal for people who want to help safely with an agent:
+
+```bash
+decomp-goal portal --repo /path/to/tww --out .git/decomp-goal/portal.html
+```
+
+The portal is a static HTML page for one local worktree. It shows setup readiness, safe starting targets, ready commands, and contribution boundaries. It is not a ROM upload service and does not replace maintainer review.
+
 Render a scoped `/goal` prompt:
 
 ```bash
@@ -359,6 +367,17 @@ The harness is designed around the workflow shown in banteg's Wind Waker `d_a_pz
 - record the remaining mismatch class when stuck: string pool, relocation, branch shape, regalloc, weak/template ordering, inline, missing type, or missing original input.
 
 The harness is intentionally an oracle wrapper, not an autonomous source mutator. A `/goal` agent can consume its target list, goal packet, JSON run records, and dashboard while doing the actual source edits in the project worktree.
+
+## Contributor portal
+
+`decomp-goal portal` is the first step toward the "support your favorite game with an AI model" workflow without creating maintainer burden. For a supported local worktree it renders:
+
+- setup blockers from `doctor`,
+- beginner-sized target candidates from `pick`,
+- exact commands for goal/run/goal-html/Codex,
+- hard boundaries against original-input handling, binary patching, and unreviewable edits.
+
+The intended hosted version would be a registry and task broker over the same primitives: project adapter, setup doctor, scoped target, oracle-backed progress, and reviewable output. The local static portal keeps those rules explicit before there is any web service.
 
 ## Reducing the last-mile grind
 
