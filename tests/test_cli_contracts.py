@@ -7,6 +7,7 @@ from pathlib import Path
 from decomp_goal.cli import (
     apply_patch_set,
     build_gap_report,
+    default_portal_path,
     dtk_progress_matched,
     extract_metrics,
     generate_contributor_portal,
@@ -98,6 +99,15 @@ def test_repo_relative_output_paths_use_repo_not_cwd(tmp_path: Path) -> None:
     )
 
 
+def test_default_portal_path_does_not_use_ancestor_git_dir_for_nested_projects(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    nested = repo / "nested"
+    nested.mkdir(parents=True)
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+
+    assert default_portal_path(nested) == (nested / ".decomp-goal" / "portal.html").resolve()
+
+
 def test_prefix_metrics_are_extracted_and_ranked_before_fuzzy() -> None:
     weaker_prefix = {
         "matched": False,
@@ -182,8 +192,14 @@ score = "python score.py --candidate {unit} --json"
     html = generate_contributor_portal(tmp_path, "Portal", 3, None)
 
     assert "Beginner Flow" in html
+    assert "Candidate Local Targets" in html
+    assert "attempt.c" in html
     assert "decomp-goal doctor" in html
     assert "decomp-goal goal" in html
+    assert "decomp-goal run" in html
+    assert "decomp-goal goal-html" in html
+    assert "decomp-goal codex" in html
+    assert "Confirm the project issue, claiming, and contribution rules before submitting work." in html
     assert "Do not upload, fetch, or generate copyrighted original game input." in html
 
 

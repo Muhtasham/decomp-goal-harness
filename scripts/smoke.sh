@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 STATE_DIR="$(mktemp -d)"
-trap 'rm -rf "$STATE_DIR"' EXIT
+trap 'rm -rf "$STATE_DIR" "$ROOT/examples/toy_match/.decomp-goal"' EXIT
 LEADS_DIR="$STATE_DIR/leads"
 DECOMPILER_DIR="$STATE_DIR/decompilers"
 PROMPT_FILE="$STATE_DIR/goal.txt"
@@ -76,6 +76,9 @@ uv run --project "$ROOT" decomp-goal goal-html --repo "$ROOT/examples/toy_match"
 test -s "$ROOT/examples/toy_match/.decomp-goal/goal-once.html"
 uv run --project "$ROOT" decomp-goal portal --repo "$ROOT/examples/toy_match" --out .decomp-goal/portal.html --limit 2 >/dev/null
 test -s "$ROOT/examples/toy_match/.decomp-goal/portal.html"
+grep -q "Candidate Local Targets" "$ROOT/examples/toy_match/.decomp-goal/portal.html"
+grep -q "decomp-goal codex" "$ROOT/examples/toy_match/.decomp-goal/portal.html"
+grep -q "Do not upload, fetch, or generate copyrighted original game input." "$ROOT/examples/toy_match/.decomp-goal/portal.html"
 uv run --project "$ROOT" decomp-goal run --repo "$ROOT/examples/toy_match" --unit attempt.start.c --state-dir "$STATE_DIR/watch-source" --json >"$STATE_DIR/report.json" || true
 uv run --project "$ROOT" decomp-goal watch --repo "$ROOT/examples/toy_match" --unit attempt.start.c --report-json "$STATE_DIR/report.json" --state-dir "$STATE_DIR/watch" --goal-html .decomp-goal/watch-goal.html --max-ticks 1 --json >/dev/null
 test -s "$ROOT/examples/toy_match/.decomp-goal/watch-goal.html"
@@ -86,7 +89,6 @@ uv run --project "$ROOT" decomp-goal dashboard --repo "$ROOT/examples/toy_match"
 test -s "$STATE_DIR/dashboard.html"
 uv run --project "$ROOT" decomp-goal dashboard --repo "$ROOT/examples/toy_match" --state-dir "$STATE_DIR" --out .decomp-goal/smoke-dashboard.html >/dev/null
 test -s "$ROOT/examples/toy_match/.decomp-goal/smoke-dashboard.html"
-rm -rf "$ROOT/examples/toy_match/.decomp-goal"
 
 BUILD_ONLY="$STATE_DIR/build_only"
 cp -R "$ROOT/examples/toy_match" "$BUILD_ONLY"

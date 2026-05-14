@@ -101,7 +101,7 @@ Generate a local contributor portal for people who want to help safely with an a
 decomp-goal portal --repo /path/to/tww --out .git/decomp-goal/portal.html
 ```
 
-The portal is a static HTML page for one local worktree. It shows setup readiness, safe starting targets, ready commands, and contribution boundaries. It is not a ROM upload service and does not replace maintainer review.
+The portal is a static HTML page for one local worktree. It shows setup readiness, candidate local targets, ready commands, and contribution boundaries. It is not a ROM upload service and does not replace maintainer review or project issue/claiming rules.
 
 Render a scoped `/goal` prompt:
 
@@ -373,11 +373,11 @@ The harness is intentionally an oracle wrapper, not an autonomous source mutator
 `decomp-goal portal` is the first step toward the "support your favorite game with an AI model" workflow without creating maintainer burden. For a supported local worktree it renders:
 
 - setup blockers from `doctor`,
-- beginner-sized target candidates from `pick`,
+- candidate local targets from `pick`,
 - exact commands for goal/run/goal-html/Codex,
 - hard boundaries against original-input handling, binary patching, and unreviewable edits.
 
-The intended hosted version would be a registry and task broker over the same primitives: project adapter, setup doctor, scoped target, oracle-backed progress, and reviewable output. The local static portal keeps those rules explicit before there is any web service.
+The intended hosted version would be a registry and task broker over the same primitives: project adapter, setup doctor, scoped target, oracle-backed progress, and reviewable output. The local static portal keeps those rules explicit before there is any web service. The targets are ranking suggestions, not maintainer-approved claims; contributors still need to check the project's issue tracker, Discord, and contribution rules before submitting work.
 
 ## Reducing the last-mile grind
 

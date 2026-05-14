@@ -167,7 +167,24 @@ def git_info(repo: Path) -> dict[str, str | None]:
     }
 
 
+def git_toplevel(repo: Path) -> Path | None:
+    proc = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"],
+        cwd=repo,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        return None
+    raw_path = proc.stdout.strip()
+    return Path(raw_path).resolve() if raw_path else None
+
+
 def git_path(repo: Path, relative_path: str) -> Path | None:
+    toplevel = git_toplevel(repo)
+    if toplevel != repo.resolve():
+        return None
     proc = subprocess.run(
         ["git", "rev-parse", "--git-path", relative_path],
         cwd=repo,
@@ -2068,11 +2085,12 @@ def generate_contributor_portal(repo: Path, title: str, limit: int, query: str |
     <tbody>{checks}</tbody>
   </table>
 
-  <h2>Safe Starting Targets</h2>
+  <h2>Candidate Local Targets</h2>
   <section class="targets">{picks_html}</section>
 
   <h2>Contribution Boundaries</h2>
   <section class="rules">
+    <div class="rule">Confirm the project issue, claiming, and contribution rules before submitting work.</div>
     <div class="rule">Do not upload, fetch, or generate copyrighted original game input.</div>
     <div class="rule">Do not patch generated objects, binaries, or build outputs to force a match.</div>
     <div class="rule">Prefer one small translation unit or function per goal.</div>
