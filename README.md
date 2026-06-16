@@ -9,8 +9,6 @@ It is designed for hard-mode matching projects where the goal is C/C++ source th
 The intended workflow is the same shape as a focused Codex `/goal` run, inspired by
 [banteg](https://x.com/banteg)'s public Wind Waker matching-decomp experiments.
 
-![Demo flow](docs/demo.svg)
-
 1. choose one translation unit or function,
 2. configure/build the local decomp project,
 3. run the project oracle (`objdiff`, a progress report, or a custom score command),
