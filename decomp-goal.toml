@@ -2,7 +2,7 @@
 name = "decomp-goal-harness"
 adapter = "generic"
 default_unit = "attempt.c"
-goal = "Validate the bundled toy matching oracle used by the harness."
+goal = "Validate the bundled toy matching verifier used by the harness."
 
 [commands]
 build = "uv run --project . python3 examples/toy_match/score.py --candidate {unit} --build-only"

@@ -54,7 +54,7 @@ Data: 4 / 4 bytes
     assert dtk_progress_matched(score) is True
 
 
-def test_generic_build_only_config_is_not_a_score_oracle(tmp_path: Path) -> None:
+def test_generic_build_only_config_is_not_a_score_verifier(tmp_path: Path) -> None:
     result = run_generic(
         tmp_path,
         {
@@ -83,10 +83,10 @@ build = "true"
     )
 
     report = build_gap_report(tmp_path, tmp_path / "state")
-    oracle = next(item for item in report["gaps"] if item["area"] == "oracle loop")
+    verifier = next(item for item in report["gaps"] if item["area"] == "verifier loop")
 
-    assert oracle["status"] == "open"
-    assert "score" in oracle["next"]
+    assert verifier["status"] == "open"
+    assert "score" in verifier["next"]
 
 
 def test_repo_relative_output_paths_use_repo_not_cwd(tmp_path: Path) -> None:

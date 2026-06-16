@@ -2,7 +2,7 @@
 
 ## About
 
-`decomp-goal-harness` is a lightweight command-line harness for running agent-driven matching decompilation goals. It helps find unfinished decompilation targets, generate scoped Codex goal prompts, run the local build/diff oracle, store structured progress records, and render a small progress dashboard.
+`decomp-goal-harness` is a lightweight command-line harness for running agent-driven matching decompilation goals. It helps find unfinished decompilation targets, generate scoped Codex goal prompts, run the local build/diff verifier, store structured progress records, and render a small progress dashboard.
 
 It is designed for hard-mode matching projects where the goal is C/C++ source that compiles back to the same binary as the original. The harness does not include game assets, does not patch binaries, and does not decompile by itself. It gives a Codex-style agent a tight, repeatable compile-diff-edit loop.
 
@@ -11,7 +11,7 @@ The intended workflow is the same shape as a focused Codex `/goal` run, inspired
 
 1. choose one translation unit or function,
 2. configure/build the local decomp project,
-3. run the project oracle (`objdiff`, a progress report, or a custom score command),
+3. run the project verifier (`objdiff`, a progress report, or a custom score command),
 4. make small source edits,
 5. commit only measurable improvements.
 
@@ -118,7 +118,7 @@ decomp-goal run --repo /path/to/project --unit attempt.c
 ```
 
 Run records are written under the repo's Git metadata path by default, e.g. `.git/decomp-goal/runs/`, so the harness does not dirty the decomp worktree.
-This repo includes a root `decomp-goal.toml` wired to the toy oracle, so the harness can audit itself:
+This repo includes a root `decomp-goal.toml` wired to the toy verifier, so the harness can audit itself:
 
 ```bash
 uv run decomp-goal gaps --repo .
@@ -131,15 +131,15 @@ View the run history:
 decomp-goal history --repo /path/to/project
 ```
 
-Gate a progress commit on the latest oracle record:
+Gate a progress commit on the latest verifier record:
 
 ```bash
 decomp-goal checkpoint --repo /path/to/project
 decomp-goal checkpoint --repo /path/to/project --commit
 ```
 
-`--commit` stages and commits the current dirty worktree only when the latest saved run record beats prior history. Use it after a fresh `decomp-goal run`, not as a substitute for the oracle.
-The checkpoint also verifies that the current worktree fingerprint matches the latest oracle record, so stale successful runs cannot authorize unrelated edits.
+`--commit` stages and commits the current dirty worktree only when the latest saved run record beats prior history. Use it after a fresh `decomp-goal run`, not as a substitute for the verifier.
+The checkpoint also verifies that the current worktree fingerprint matches the latest verifier record, so stale successful runs cannot authorize unrelated edits.
 
 Ask the harness whether the agent is stuck and what to do next:
 
@@ -324,7 +324,7 @@ Known non-match:
 uv run decomp-goal run --repo examples/toy_match --unit attempt.start.c
 ```
 
-This fixture proves the harness loop without requiring a commercial game image. Real ZeldaRET projects still use the project oracle, usually `objdiff`.
+This fixture proves the harness loop without requiring a commercial game image. Real ZeldaRET projects still use the project verifier, usually `objdiff`.
 
 Generate the toy dashboard:
 
@@ -334,7 +334,7 @@ uv run decomp-goal dashboard --repo examples/toy_match --title "Toy Match Progre
 
 ## Runner model
 
-The harness does not need to own Codex. It creates the task packet and records oracle results; Codex is one runner.
+The harness does not need to own Codex. It creates the task packet and records verifier results; Codex is one runner.
 
 Use `codex exec` for bounded, non-interactive passes:
 
@@ -364,7 +364,7 @@ The harness is designed around the workflow shown in banteg's Wind Waker `d_a_pz
 - treat sudden exact-function jumps as possible layout cascades until proven,
 - record the remaining mismatch class when stuck: string pool, relocation, branch shape, regalloc, weak/template ordering, inline, missing type, or missing original input.
 
-The harness is intentionally an oracle wrapper, not an autonomous source mutator. A `/goal` agent can consume its target list, goal packet, JSON run records, and dashboard while doing the actual source edits in the project worktree.
+The harness is intentionally a verifier wrapper, not an autonomous source mutator. A `/goal` agent can consume its target list, goal packet, JSON run records, and dashboard while doing the actual source edits in the project worktree.
 
 ## Contributor portal
 
@@ -375,7 +375,7 @@ The harness is intentionally an oracle wrapper, not an autonomous source mutator
 - exact commands for goal/run/goal-html/Codex,
 - hard boundaries against original-input handling, binary patching, and unreviewable edits.
 
-The intended hosted version would be a registry and task broker over the same primitives: project adapter, setup doctor, scoped target, oracle-backed progress, and reviewable output. The local static portal keeps those rules explicit before there is any web service. The targets are ranking suggestions, not maintainer-approved claims; contributors still need to check the project's issue tracker, Discord, and contribution rules before submitting work.
+The intended hosted version would be a registry and task broker over the same primitives: project adapter, setup doctor, scoped target, verifier-backed progress, and reviewable output. The local static portal keeps those rules explicit before there is any web service. The targets are ranking suggestions, not maintainer-approved claims; contributors still need to check the project's issue tracker, Discord, and contribution rules before submitting work.
 
 ## Reducing the last-mile grind
 
@@ -384,15 +384,15 @@ The painful part starts when a TU is nearly correct but one or two functions sti
 1. `decomp-goal lead` classifies the diff into mismatch classes such as string pool, branch shape, regalloc, relocation/call target, stack frame, constant/type, or unknown.
 2. `decomp-goal lead --diff-json` ingests structured objdiff/asm-differ-style JSON when a project can export it.
 3. `decomp-goal experiments` writes a checklist for one-hypothesis-at-a-time variants under the repo's Git metadata path.
-4. `decomp-goal variants` applies patch files one at a time, runs the oracle, records metrics, and reverts non-kept variants.
+4. `decomp-goal variants` applies patch files one at a time, runs the verifier, records metrics, and reverts non-kept variants.
 5. `decomp-goal fuzz` tries bounded combinations of patch variants when the last mile needs the right combination of source edits.
 6. `decomp-goal coach` watches run history for high-score plateaus and tells the agent to stop broad rewrites when it is stuck.
 7. `decomp-goal monitor` runs that coaching loop periodically during tmux sessions and writes a steering prompt when intervention is needed.
 8. `decomp-goal watch` copies changing external report JSON into durable harness history and refreshes `goal.html`.
 9. `decomp-goal steer` and `decomp-goal decompilers` store external leads and inject the latest ones into the next generated `/goal` prompt.
-10. `decomp-goal checkpoint` makes "commit every improvement" mechanical: it compares the latest run against prior history and only allows a commit when the oracle improved.
+10. `decomp-goal checkpoint` makes "commit every improvement" mechanical: it compares the latest run against prior history and only allows a commit when the verifier improved.
 
-That does not eliminate the hard part, but it keeps the agent from random-walking after 99%. The expected behavior is: classify first, watch matching prefix/first mismatch, try bounded variants and combinations, revert failures, preserve only oracle improvements, and ask for a human/decompiler/debug-map lead when the same mismatch class survives several variants.
+That does not eliminate the hard part, but it keeps the agent from random-walking after 99%. The expected behavior is: classify first, watch matching prefix/first mismatch, try bounded variants and combinations, revert failures, preserve only verifier improvements, and ask for a human/decompiler/debug-map lead when the same mismatch class survives several variants.
 
 The remaining non-code boundary is original game input. The harness intentionally reports `missing_original_input`; it does not fetch, generate, or bypass copyrighted game material.
 
@@ -409,7 +409,7 @@ Rules:
 - Use source-level decompilation changes; do not patch generated/original binaries.
 - Prefer the project’s existing macros, typedefs, headers, and naming style.
 - Make small commits only for measurable improvements.
-- Do not mark a function or TU matching unless the local diff/build oracle proves it.
+- Do not mark a function or TU matching unless the local diff/build verifier proves it.
 - When stuck, classify the mismatch: layout, string pool, branch shape, regalloc, weak/template ordering, relocation, inline, missing type, or missing original input.
 ```
 

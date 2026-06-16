@@ -792,14 +792,14 @@ Rules:
 - Use source-level decompilation changes; do not patch generated/original binaries.
 - Prefer the project’s existing macros, typedefs, headers, and naming style.
 - Make small commits only for measurable improvements: exact function count, matched bytes, fuzzy score, or a documented layout unblocker.
-- Do not mark a function or TU matching unless the local diff/build oracle proves it.
+- Do not mark a function or TU matching unless the local diff/build verifier proves it.
 - When stuck, classify the mismatch: layout, string pool, branch shape, regalloc, weak/template ordering, relocation, inline, missing type, or missing original input.
 - Treat layout cascades carefully: a tiny function body can realign downstream code and create large apparent jumps.
 - Record near-matches with the exact remaining delta instead of hiding them behind fake source tricks.
 
 Last-mile protocol:
 - If fuzzy/code score is high but exact matching stalls, stop broad rewrites and classify the diff first.
-- Generate a short experiment queue, run one hypothesis at a time, and revert variants that do not improve the oracle.
+- Generate a short experiment queue, run one hypothesis at a time, and revert variants that do not improve the verifier.
 - Prefer evidence-bearing leads: nearby matched code, debug maps, decompiler agreement/disagreement, objdiff relocation/string deltas, and exact changed instruction classes.
 - If three consecutive runs do not improve, write down the blocker before continuing.
 {recent_leads}
@@ -1185,7 +1185,7 @@ def build_checkpoint_report(repo: Path, records: list[dict[str, Any]]) -> dict[s
             "improvements": [],
             "recommended_message": None,
             "fingerprint_matches": False,
-            "advice": ["Run `decomp-goal run` first so the checkpoint has an oracle result."],
+            "advice": ["Run `decomp-goal run` first so the checkpoint has a verifier result."],
         }
 
     latest = records[-1]
@@ -1232,10 +1232,12 @@ def build_checkpoint_report(repo: Path, records: list[dict[str, Any]]) -> dict[s
     advice = []
     if not fingerprint_matches:
         advice.append(
-            "Do not commit this checkpoint yet; the latest oracle run does not match the current worktree fingerprint."
+            "Do not commit this checkpoint yet; the latest verifier run does not match the current worktree fingerprint."
         )
     elif improvements and dirty:
-        advice.append("Commit is allowed: latest oracle record improves over prior history and the worktree is dirty.")
+        advice.append(
+            "Commit is allowed: latest verifier record improves over prior history and the worktree is dirty."
+        )
     elif improvements:
         advice.append("Improvement detected, but the worktree is clean. It may already have been committed.")
     else:
@@ -1426,7 +1428,7 @@ def run_variant_batch(
                 raise SystemExit(f"failed to reverse patch {patch}: {item['revert_error']}")
             after_revert = worktree_fingerprint(repo)
             if after_revert.get("sha256") != initial_fingerprint.get("sha256"):
-                item["side_effect_error"] = "oracle or patch left tracked/untracked worktree changes after revert"
+                item["side_effect_error"] = "verifier or patch left tracked/untracked worktree changes after revert"
                 item["status"] = "side_effect_failed"
                 results.append(item)
                 raise SystemExit(item["side_effect_error"])
@@ -1522,7 +1524,9 @@ def run_fuzz_batch(
                 raise SystemExit(f"failed to reverse patch combo {combo_id}: {revert_error}")
             after_revert = worktree_fingerprint(repo)
             if after_revert.get("sha256") != initial_fingerprint.get("sha256"):
-                item["side_effect_error"] = "oracle or patch combo left tracked/untracked worktree changes after revert"
+                item["side_effect_error"] = (
+                    "verifier or patch combo left tracked/untracked worktree changes after revert"
+                )
                 item["status"] = "side_effect_failed"
                 results.append(item)
                 raise SystemExit(item["side_effect_error"])
@@ -1558,21 +1562,21 @@ def build_gap_report(repo: Path, state_dir: Path) -> dict[str, Any]:
     missing_original_input = adapter == "dtk" and not info.get("dtk", {}).get("has_original_input")
     dtk_ready = adapter == "dtk" and bool(info.get("dtk", {}).get("configure_py"))
     generic_ready = adapter == "generic" and bool(commands.get("score"))
-    oracle_status = "external" if missing_original_input else ("covered" if dtk_ready or generic_ready else "open")
-    has_diff_oracle = bool(commands.get("diff") or info.get("dtk", {}).get("objdiff_json"))
-    if has_diff_oracle:
+    verifier_status = "external" if missing_original_input else ("covered" if dtk_ready or generic_ready else "open")
+    has_diff_verifier = bool(commands.get("diff") or info.get("dtk", {}).get("objdiff_json"))
+    if has_diff_verifier:
         diff_status = "covered"
     elif missing_original_input:
         diff_status = "external"
     else:
         diff_status = "open"
-    oracle_why = (
-        "A DTK-style project is detected, but the local legal original input is missing, so the real build/diff oracle cannot execute yet."
-        if oracle_status == "external"
+    verifier_why = (
+        "A DTK-style project is detected, but the local legal original input is missing, so the real build/diff verifier cannot execute yet."
+        if verifier_status == "external"
         else (
             "The harness can run configure/build/score and persist JSON run records."
-            if oracle_status == "covered"
-            else "The repo does not expose a score oracle the harness can use to prove matching progress."
+            if verifier_status == "covered"
+            else "The repo does not expose a score verifier the harness can use to prove matching progress."
         )
     )
     diff_why = (
@@ -1586,23 +1590,23 @@ def build_gap_report(repo: Path, state_dir: Path) -> dict[str, Any]:
     )
     gaps = [
         {
-            "area": "oracle loop",
-            "status": oracle_status,
-            "why": oracle_why,
+            "area": "verifier loop",
+            "status": verifier_status,
+            "why": verifier_why,
             "next": (
                 "Keep project-specific score commands honest and cheap enough for repeated agent use."
-                if oracle_status == "covered"
+                if verifier_status == "covered"
                 else (
-                    "Provide legal original inputs, then run the project setup/build so the DTK oracle can execute."
-                    if oracle_status == "external"
-                    else "Add a `[commands].score` oracle or use a DTK-style project with `configure.py`."
+                    "Provide legal original inputs, then run the project setup/build so the DTK verifier can execute."
+                    if verifier_status == "external"
+                    else "Add a `[commands].score` verifier or use a DTK-style project with `configure.py`."
                 )
             ),
         },
         {
             "area": "improvement commits",
             "status": "covered",
-            "why": "`checkpoint` gates commits on measurable oracle improvement, matching the banteg vertical-rule workflow.",
+            "why": "`checkpoint` gates commits on measurable verifier improvement, matching the banteg vertical-rule workflow.",
             "next": "Use `decomp-goal checkpoint --commit` only after a successful run record.",
         },
         {
@@ -1634,7 +1638,7 @@ def build_gap_report(repo: Path, state_dir: Path) -> dict[str, Any]:
         {
             "area": "variant search",
             "status": "covered",
-            "why": "`variants` applies patch files one at a time, runs the oracle, records metrics, and reverses each patch unless `--keep-best` is requested.",
+            "why": "`variants` applies patch files one at a time, runs the verifier, records metrics, and reverses each patch unless `--keep-best` is requested.",
             "next": "Have agents generate patch candidates into a patch directory, then let the runner test them mechanically.",
         },
         {
@@ -1711,19 +1715,19 @@ def build_doctor_report(repo: Path) -> dict[str, Any]:
             "Add a `decomp-goal.toml` with at least `[commands].score`.",
         )
         add(
-            "score oracle",
+            "score verifier",
             "ok" if commands.get("score") else "fail",
             "[commands].score present" if commands.get("score") else "[commands].score missing",
             "Add a score command that prints JSON with `matched` and progress metrics.",
         )
         add(
-            "diff oracle",
+            "diff verifier",
             "ok" if commands.get("diff") else "warn",
             "[commands].diff present" if commands.get("diff") else "lead needs --diff-file/--diff-json without it",
             "Add `[commands].diff` if the repo can produce text diffs cheaply.",
         )
         if commands and not info.get("tools", {}).get("cc"):
-            add("tool:cc", "warn", "cc missing", "Install a C compiler if this repo's oracle compiles C/C++.")
+            add("tool:cc", "warn", "cc missing", "Install a C compiler if this repo's verifier compiles C/C++.")
     else:
         add(
             "dtk project",
@@ -2075,7 +2079,7 @@ def generate_contributor_portal(repo: Path, title: str, limit: int, query: str |
   <section class="flow">
     <div class="step"><strong>1. Check setup</strong>{render_shell(doctor_command)}</div>
     <div class="step"><strong>2. Pick a target</strong>{render_shell(pick_command)}</div>
-    <div class="step"><strong>3. Run the oracle</strong><p>Build/diff must be local and repeatable before an agent edits source.</p></div>
+    <div class="step"><strong>3. Run the verifier</strong><p>Build/diff must be local and repeatable before an agent edits source.</p></div>
     <div class="step"><strong>4. Watch progress</strong>{render_shell(monitor_command)}</div>
   </section>
 
@@ -2094,7 +2098,7 @@ def generate_contributor_portal(repo: Path, title: str, limit: int, query: str |
     <div class="rule">Do not upload, fetch, or generate copyrighted original game input.</div>
     <div class="rule">Do not patch generated objects, binaries, or build outputs to force a match.</div>
     <div class="rule">Prefer one small translation unit or function per goal.</div>
-    <div class="rule">Submit only reviewable branches with oracle records and a clear mismatch story.</div>
+    <div class="rule">Submit only reviewable branches with verifier records and a clear mismatch story.</div>
   </section>
 </main>
 </body>
@@ -2454,7 +2458,7 @@ def build_lead_report(
         "next_actions": diagnosis["next_actions"],
         "anti_masochism": [
             "Do not keep freeform-editing after a high fuzzy score. Name the mismatch class first.",
-            "Run one hypothesis per variant and keep only variants that improve the oracle.",
+            "Run one hypothesis per variant and keep only variants that improve the verifier.",
             "Escalate to human/decompiler/debug-map leads when the same class survives three variants.",
         ],
     }
@@ -2491,7 +2495,7 @@ def coach_history(records: list[dict[str, Any]], min_runs: int, plateau_runs: in
     high_score = False
 
     if not records:
-        advice.append("Run the oracle once with `decomp-goal run` so there is a baseline.")
+        advice.append("Run the verifier once with `decomp-goal run` so there is a baseline.")
         return {
             "status": status,
             "summary": summary,
@@ -2704,7 +2708,7 @@ Repo: `{repo}`
 ## Rules
 
 - One hypothesis per variant.
-- Run the project oracle after each variant.
+- Run the project verifier after each variant.
 - Keep only variants that improve exact functions, matched bytes, fuzzy score, or documented layout.
 - Revert non-improving variants before trying the next one.
 - Do not patch binaries or generated original data.
@@ -2715,7 +2719,7 @@ Repo: `{repo}`
 
 ## Variant Log
 
-| Variant | Hypothesis | Source edit | Oracle result | Keep/Revert | Notes |
+| Variant | Hypothesis | Source edit | Verifier result | Keep/Revert | Notes |
 | --- | --- | --- | --- | --- | --- |
 | 001 |  |  |  |  |  |
 | 002 |  |  |  |  |  |
@@ -2935,7 +2939,7 @@ def main(argv: list[str] | None = None) -> int:
     history_p.add_argument("--state-dir", type=Path)
     history_p.add_argument("--json", action="store_true")
 
-    checkpoint_p = sub.add_parser("checkpoint", help="Gate a progress commit on the latest oracle record")
+    checkpoint_p = sub.add_parser("checkpoint", help="Gate a progress commit on the latest verifier record")
     checkpoint_p.add_argument("--repo", type=repo_path, default=Path.cwd())
     checkpoint_p.add_argument("--state-dir", type=Path)
     checkpoint_p.add_argument("--commit", action="store_true")
@@ -2979,7 +2983,7 @@ def main(argv: list[str] | None = None) -> int:
 
     variants_p = sub.add_parser(
         "variants",
-        help="Apply patch variants one at a time, run the oracle, and revert losers",
+        help="Apply patch variants one at a time, run the verifier, and revert losers",
     )
     variants_p.add_argument("--repo", type=repo_path, default=Path.cwd())
     variants_p.add_argument("--unit")
