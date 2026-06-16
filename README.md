@@ -15,6 +15,13 @@ The intended workflow is the same shape as a focused Codex `/goal` run, inspired
 4. make small source edits,
 5. commit only measurable improvements.
 
+## Research context
+
+This harness accompanies the accepted ICML 2026 Workshop DL4C paper
+“Matching Decompilation as a Verifier-Guided Task for Human-Centered Coding Agents.”
+The 5th Deep Learning for Code Workshop is part of ICML 2026 in Seoul, South Korea.
+See the [DL4C workshop site](https://dl4c.github.io/) for venue details.
+
 ## Install locally
 
 ```bash
